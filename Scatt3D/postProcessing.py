@@ -788,7 +788,11 @@ def solveFromQs(problemName, extraProbs=[], SparamMeas=[], SparamName='', extraS
                                 A[indexCount,:] = Apart[idxOrig][idx_non_pml] ## idxOrig to order as in the mesh, non_pml to remove the pml
                                 
                             ## also assemble this part of b, since I may be using different S-parameters than used when saving qs
-                            b[indexCount] = S_dut[nf, m, n] - S_ref[nf, n, m]
+                            ## BUGFIX: S_ref was previously indexed [nf, n, m] (transposed). With simulated data the
+                            ## S-matrix is reciprocal to solver precision so the transposition is invisible, but measured
+                            ## S-matrices are NOT exactly reciprocal (VNA switch paths, cables, drift), so the old indexing
+                            ## injected the reciprocity error of the reference measurement into every transmission row of b.
+                            b[indexCount] = S_dut[nf, m, n] - S_ref[nf, m, n]
                             
                             indexCount +=1
             f.close()

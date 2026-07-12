@@ -689,9 +689,27 @@ class Scatt3DProblem():
         max_its = 10000
         conv_sets = {"ksp_rtol": 1e-6, "ksp_atol": 1e-15, "ksp_max_it": max_its} ## convergence settings
         
-        petsc_options = {"ksp_type": "preonly", "pc_type": "lu", "pc_factor_mat_solver_type": "mumps"} ## the basic option - fast, robust/accurate, but takes a lot of memory
+        ## Solver strategy (2026 rework - see SOLVER_IMPROVEMENTS.md):
+        ## The system matrix depends only on frequency (the excitation index n only scales the
+        ## RHS port term via a[n]), so we assemble + factorize ONCE per frequency and reuse the
+        ## factorization for every exciting antenna, instead of re-assembling/re-factorizing per
+        ## excitation as dolfinx LinearProblem.solve() does. Options via self.solver_settings:
+        ##   'blr_tol': e.g. 1e-6 - enables MUMPS Block Low-Rank compressed factorization
+        ##              (ICNTL(35)=2, CNTL(7)=tol): large memory/time savings, tunable accuracy.
+        ##   'sweep_mode': True - reuses the LU factorization of the last "anchor" frequency as
+        ##              preconditioner for FGMRES at nearby frequencies; re-factorizes only when
+        ##              iterations exceed 'sweep_max_it' (default 25). Falls back to a fresh
+        ##              direct factorization on slow/failed convergence, so it cannot be less
+        ##              robust than the direct solve.
+        ##   'sweep_rtol': FGMRES relative tolerance in sweep mode (default 1e-8).
+        ##   anything else: passed through as PETSc options (with the solver's option prefix).
         #petsc_options = {"ksp_type": "preonly", "pc_type": "cholesky", "pc_factor_mat_solver_type": "mumps"} ## uses less memory than the LU solver. Also faster? Supposed to only work for positive-definite matrices, while this one is indefinite, but the norm is tiny and the solution seems reasonable. Maybe sometimes gives NaNs when using many MPI processes... but I sometimes get those with LU solver too
-        self.solve_type = 'direct'
+        solver_opts = dict(self.solver_settings) if self.solver_settings else {}
+        blr_tol = solver_opts.pop('blr_tol', None)
+        sweep_mode = solver_opts.pop('sweep_mode', False)
+        sweep_max_it = solver_opts.pop('sweep_max_it', 25)
+        sweep_rtol = solver_opts.pop('sweep_rtol', 1e-8)
+        self.solve_type = 'sweep' if sweep_mode else 'direct'
         
         #petsc_options={"ksp_type": "lgmres", "pc_type": "sor", **self.solver_settings, **conv_sets} ## (https://petsc.org/release/manual/ksp/)
         #petsc_options={"ksp_type": "lgmres", 'pc_type': 'asm', 'sub_pc_type': 'sor', **conv_sets} ## is okay
@@ -746,12 +764,85 @@ class Scatt3DProblem():
             self.solve_type = 'other'
         
         cache_dir = f"{str(Path.cwd())}/.cache"
-        jit_options={}
         jit_options= {"cffi_extra_compile_args": ['-O3', "-march=native"], "cache_dir": cache_dir, "cffi_libraries": ["m"]} ## possibly this speeds things up a little.
-        
-        problem = dolfinx.fem.petsc.LinearProblem(lhs, rhs, bcs=bcs, petsc_options=petsc_options, jit_options=jit_options, petsc_options_prefix='theScatteringProblem')
-        ksp = problem.solver
+
+        a_form = dolfinx.fem.form(lhs, jit_options=jit_options)
+        L_form = dolfinx.fem.form(rhs, jit_options=jit_options)
+        A_mat = dolfinx.fem.petsc.create_matrix(a_form)
+        b_vec = dolfinx.fem.petsc.create_vector(FEMm.VSpace)
+        A_anchor = dolfinx.fem.petsc.create_matrix(a_form) if sweep_mode else None ## holds the last-factorized ("anchor") frequency's matrix in sweep mode
+        self._sweep_anchored = False
+
+        opts = PETSc.Options()
+        prefix = 'theScatteringProblem_'
+        opts[prefix+'pc_type'] = 'lu'
+        opts[prefix+'pc_factor_mat_solver_type'] = 'mumps'
+        opts[prefix+'mat_mumps_icntl_14'] = 50 ## extra workspace margin - avoids spurious failures/NaN results from MUMPS underallocation
+        if(sweep_mode):
+            opts[prefix+'ksp_type'] = 'fgmres'
+            opts[prefix+'ksp_rtol'] = sweep_rtol
+            opts[prefix+'ksp_max_it'] = max(4*sweep_max_it, 100)
+        else:
+            opts[prefix+'ksp_type'] = 'preonly'
+        if(blr_tol is not None): ## MUMPS Block Low-Rank compressed factorization
+            opts[prefix+'mat_mumps_icntl_35'] = 2
+            opts[prefix+'mat_mumps_cntl_7'] = float(blr_tol)
+        for key, val in solver_opts.items(): ## user-specified overrides/additions
+            opts[prefix+key] = val
+
+        ksp = PETSc.KSP().create(self.comm)
+        ksp.setOptionsPrefix(prefix)
+        if(sweep_mode):
+            ksp.setOperators(A_mat, A_anchor)
+        else:
+            ksp.setOperators(A_mat)
+        ksp.setFromOptions()
         pc = ksp.getPC()
+
+        def assembleLHS(anchor=False):
+            '''
+            (Re)assembles the system matrix for the current frequency (the constants k00/Zm and
+            the PML functions are read at assembly time). Called once per frequency. In direct
+            mode the next solve triggers exactly one new factorization, reused by all excitations.
+            In sweep mode the preconditioner matrix keeps the anchor frequency's values, so no
+            new factorization happens unless anchor=True (or nothing is anchored yet).
+            '''
+            A_mat.zeroEntries()
+            dolfinx.fem.petsc.assemble_matrix(A_mat, a_form, bcs=bcs)
+            A_mat.assemble()
+            if(sweep_mode and (anchor or not self._sweep_anchored)):
+                ## assemble directly into the anchor matrix (cheap next to factorization; MatCopy
+                ## into a freshly created matrix leaves it in a state LU factorization rejects)
+                A_anchor.zeroEntries()
+                dolfinx.fem.petsc.assemble_matrix(A_anchor, a_form, bcs=bcs)
+                A_anchor.assemble()
+                self._sweep_anchored = True
+
+        def solveCurrent(E_h):
+            '''
+            Assembles the RHS for the current excitation (set via a[n]) and solves into E_h,
+            reusing the existing factorization (direct mode: of this frequency; sweep mode: of
+            the anchor frequency, as an FGMRES preconditioner). In sweep mode, if convergence is
+            too slow the factorization is re-anchored at the current frequency and the solve is
+            repeated. Returns the KSP iteration count.
+            '''
+            with b_vec.localForm() as loc:
+                loc.set(0)
+            dolfinx.fem.petsc.assemble_vector(b_vec, L_form)
+            dolfinx.fem.petsc.apply_lifting(b_vec, [a_form], bcs=[bcs])
+            b_vec.ghostUpdate(addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.REVERSE)
+            dolfinx.fem.petsc.set_bc(b_vec, bcs)
+            ksp.solve(b_vec, E_h.x.petsc_vec)
+            E_h.x.scatter_forward()
+            its = ksp.getIterationNumber()
+            if(sweep_mode and (ksp.getConvergedReason() < 0 or its > sweep_max_it)): ## anchor too stale: re-factorize at this frequency and re-solve
+                if(self.comm.rank == self.model_rank and self.verbosity > 1.5):
+                    print(f'Sweep mode: re-anchoring the factorization (its={its}, reason={ksp.getConvergedReason()})')
+                assembleLHS(anchor=True)
+                ksp.solve(b_vec, E_h.x.petsc_vec)
+                E_h.x.scatter_forward()
+                its = ksp.getIterationNumber()
+            return its
         
         #=======================================================================
         # coarse_ksp = pc.getMGCoarseSolve()
@@ -954,6 +1045,8 @@ class Scatt3DProblem():
                     Zm.value = eta0/np.sqrt(2.1*(1 - 0.01j))
                 self.CalculatePML(FEMm, k0)  ## update PML to this freq.
                 Eb.interpolate(functools.partial(planeWave, k=k0))
+                assembleLHS() ## assemble the system matrix once per frequency - every excitation below reuses it (and its factorization)
+                E_h = dolfinx.fem.Function(FEMm.VSpace)
                 for n in range(excitationCount):
                     for m in range(excitationCount):
                         a[m].value = 0.0
@@ -968,7 +1061,7 @@ class Scatt3DProblem():
                                 S = np.load(self.dataFolder+self.name+nameAdd+'_temp_S.npz')['saveS']
                             S = self.comm.bcast(S, root=self.model_rank)
                             continue
-                    E_h = problem.solve()
+                    solveCurrent(E_h)
                     if(np.isnan(np.dot(E_h.x.array, E_h.x.array))): ## sometimes if memory requirements are too high, it will still 'compute' but end with NaN results. Sometimes another error will give Inf. results
                         if( self.comm.rank == self.model_rank ):
                             print(E_h.x.array)
@@ -1021,7 +1114,7 @@ class Scatt3DProblem():
             FEMm.epsr.x.array[:] = FEMm.epsr_array_dut
             self.S_dut = ComputeFields(ref=False)
             
-        solver = problem.solver
+        solver = ksp
         os.makedirs(os.path.dirname(self.dataFolder), exist_ok=True) ## make sure the data folder exists - this is the first place I get an error for it
         fname=self.dataFolder+self.name+"solver_output.info"
         viewer = PETSc.Viewer().createASCII(fname)
