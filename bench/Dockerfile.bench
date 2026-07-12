@@ -1,0 +1,5 @@
+FROM dolfinx/dolfinx:stable
+# Full dependency recipe for running Scatt3D (upstream or this branch) + benchmarks.
+# adios4dolfinx from git main: the released 0.10.x does not support dolfinx 0.11.
+RUN pip install --no-cache-dir --break-system-packages --no-deps git+https://github.com/jorgensd/adios4dolfinx@main \
+ && pip install --no-cache-dir --break-system-packages wigners memory_profiler h5py psutil miepython spgl1

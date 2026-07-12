@@ -1,0 +1,34 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  fast-tests:
+    # numpy/matplotlib only — the critical-fix unit test and the diagnostics self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy matplotlib
+      - name: b-vector fix unit test
+        run: python Scatt3D/test_bvector_fix.py
+      - name: measurement diagnostics self-test
+        run: python Scatt3D/test_measurement_diagnostics.py
+
+  fem-smoke:
+    # full stack: complex-mode dolfinx solve via the official container
+    runs-on: ubuntu-latest
+    container: dolfinx/dolfinx:stable
+    steps:
+      - uses: actions/checkout@v4
+      - name: install extra deps
+        run: |
+          pip install --break-system-packages --no-deps git+https://github.com/jorgensd/adios4dolfinx@main
+          pip install --break-system-packages wigners memory_profiler h5py psutil miepython spgl1
+      - name: complex-mode FEM smoke test
+        run: |
+          bash -c 'source /usr/local/bin/dolfinx-complex-mode && cd Scatt3D && python3 testExample.py'
