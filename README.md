@@ -62,7 +62,13 @@ python3 Scatt3D/test_measurement_diagnostics.py   # diagnostics on synthetic gro
 prob = Scatt3DProblem(comm, mesh, ...)                                # direct, 3.3x faster than before
 prob = Scatt3DProblem(comm, mesh, solver_settings={'blr_tol': 1e-6}) # + MUMPS BLR compression
 prob = Scatt3DProblem(comm, mesh, solver_settings={'sweep_mode': True})  # anchor-LU + FGMRES sweep
+prob = Scatt3DProblem(comm, mesh, solver_settings={'symmetric': True})   # complex-symmetric LDL^T: ~0.55-0.6x LU memory, runs 3M+ dof deg-3 where LU cannot
 ```
+
+> `'symmetric'` needs a BLAS with a working GEMMT: OpenBLAS 0.3.26 (the default in
+> `dolfinx/dolfinx:stable`) segfaults inside `zgemmt_` under ZMUMPS 5.8.2 — use the
+> LD_PRELOAD shim in `bench/zgemmt_fix.f90` (already baked into `bench/Dockerfile.bench`).
+> Details + measured memory ladder: `docs/SOLVER_IMPROVEMENTS.md`.
 
 ### Diagnose your measurement (no FEM required)
 

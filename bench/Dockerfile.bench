@@ -3,3 +3,10 @@ FROM dolfinx/dolfinx:stable
 # adios4dolfinx from git main: the released 0.10.x does not support dolfinx 0.11.
 RUN pip install --no-cache-dir --break-system-packages --no-deps git+https://github.com/jorgensd/adios4dolfinx@main \
  && pip install --no-cache-dir --break-system-packages wigners memory_profiler h5py psutil miepython spgl1
+# OpenBLAS 0.3.26 (the image's active libblas alternative) has a broken zgemmt kernel that
+# segfaults inside ZMUMPS 5.8.2 LDLT frontal updates (even with OPENBLAS_NUM_THREADS=1), and
+# the image's reference BLAS has no GEMMT at all. Override just zgemmt_ with a correct
+# ZGEMM-based implementation (unit-tested in test_zgemmt.py).
+COPY zgemmt_fix.f90 /usr/local/src/zgemmt_fix.f90
+RUN gfortran -shared -fPIC -O2 /usr/local/src/zgemmt_fix.f90 -o /usr/local/lib/libzgemmt_fix.so -lblas
+ENV LD_PRELOAD=/usr/local/lib/libzgemmt_fix.so

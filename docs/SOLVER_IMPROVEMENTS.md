@@ -153,3 +153,86 @@ same mesh).
 - The measured-data calibration (`compileMeasuredSs`) is still phase-only; see the main
   audit report for the recommended per-channel complex calibration and the new
   `measurement_diagnostics.py` for measuring what it should be.
+
+## 6. Symmetric LDL^T mode (`solver_settings={'symmetric': True}`) — WIP branch
+
+The assembled operator is complex symmetric (A = A^T, not Hermitian): curl-curl, mass,
+diagonal-tensor PML and the port Robin terms are all symmetric, and PEC elimination is
+applied symmetrically. MUMPS can therefore factorize it as LDL^T (SYM=2), storing roughly
+half of what LU stores. Enabled by flagging the AIJ matrix SYMMETRIC/SYMMETRY_ETERNAL and
+using PCCHOLESKY instead of PCLU (MUMPS backend, numerical pivoting — valid for
+indefinite complex-symmetric systems). Stacks with `blr_tol`.
+
+### The crash this replaces (and why the old cholesky experiment failed)
+
+Enabling this mode in `dolfinx/dolfinx:stable` segfaulted inside MUMPS at the first
+numeric factorization. Root cause — found by dumping the real assembled matrix
+(`-<prefix>ksp_view_mat binary:`) and bisecting with a standalone load-and-factor
+harness + gdb:
+
+- **OpenBLAS 0.3.26's `zgemmt` kernel is broken** (the image's active `libblas.so.3`
+  alternative). ZMUMPS 5.8.2's LDL^T frontal update calls the BLAS-extension GEMMT
+  (triangular-referenced GEMM); the call segfaults inside `zgemmt_` even with
+  `OPENBLAS_NUM_THREADS=1`. gdb frames: `zgemmt_` ← `zmumps_fac_t_ldlt` ← `zmumps_fac_par`.
+- LU is unaffected because the unsymmetric path never calls GEMMT — which is why only
+  Cholesky/LDL^T ever crashed (the author's old commented-out cholesky experiment that
+  "gave NaNs" is plausibly the same disease in an older guise).
+- The image's *reference* BLAS alternative exports no GEMMT symbol at all (GEMMT is an
+  MKL extension adopted by OpenBLAS, never part of netlib BLAS), so switching
+  alternatives is not a fix. All 11 MUMPS-side knobs tested (orderings AMD/PORD/METIS,
+  pivot thresholds, icntl_58, icntl_12, icntl_24, SBAIJ storage) crash identically —
+  the bug is below MUMPS.
+- Toy complex-symmetric matrices do NOT reproduce it (their frontal blocks are too small
+  to reach the blocked GEMMT path) — the dumped-real-matrix harness in `bench/symtest/`
+  is the go-to repro pattern, and doubles as an upstream OpenBLAS bug report.
+
+**Fix:** `bench/zgemmt_fix.f90` — a blocked ZGEMM-based drop-in `zgemmt_`, LD_PRELOADed
+over the system BLAS (baked into `bench/Dockerfile.bench`). Unit-tested against numpy
+ground truth in `bench/test_zgemmt.py` (all uplo/trans combos, block-boundary sizes,
+beta=0 not-read semantics; max rel err ~1e-16).
+
+### Verified results (with the fix)
+
+74k-dof deg-1 sphere benchmark (single rank): symmetric mode matches LU to
+**max|dS| = 3.3e-16** (bit-level), factor memory **135 MB vs 224 MB (0.60x)**, and the
+solve is ~2x faster.
+
+Memory ladder, degree 3, 8 MPI ranks, CPX51 (16 vCPU / 32 GB), MUMPS INFOG(16/17):
+
+| dofs | config | factor mem (total) | vs LU | solve | max|dS| vs LU |
+|---|---|---|---|---|---|
+| 898,902 | lu | 10,021 MB | 1.00 | 42.5 s | — |
+| 898,902 | sym | 6,043 MB | 0.60 | 22.1 s | 1.2e-15 |
+| 898,902 | sym+blr 1e-6 | 6,096 MB | 0.61 | 22.0 s | 5.2e-11 |
+| 1,803,117 | lu | 22,305 MB | 1.00 | 59.9 s | — |
+| 1,803,117 | sym | 13,065 MB | 0.586 | 46.6 s | 1.0e-15 |
+| 1,803,117 | sym+blr 1e-6 | 13,243 MB | 0.594 | 43.2 s | 2.1e-10 |
+| 2,801,391 | lu | **OOM-killed (does not fit 32 GB)** | — | — | — |
+| 2,801,391 | sym | 20,143 MB | runs where LU cannot | 72.7 s | vs sym+blr: 5.9e-11 |
+| 2,801,391 | sym+blr 1e-6 | 20,290 MB | — | 65.7 s | — |
+| **3,232,812** | **sym** | **24,389 MB** | **runs where LU cannot** | 109.9 s | — |
+
+At and above ~2.8M dofs (degree 3) direct LU no longer fits the 32 GB box at all —
+the OOM kill *is* the LU baseline there. A swap-assisted measured LU run at 2.8M
+(below) pins the actual ratio at the largest size where LU can be made to complete.
+The h=0.22 rung (~5.8M dofs) was skipped deliberately: beyond the 3M acceptance
+target and swap-bound for hours with no additional claim value.
+<!-- LU28_BASELINE_APPEND_MARKER: swap-assisted measured LU @ 2.8M + sym-vs-LU dS pending -->
+
+Note: with `blr_tol`, INFOG(16/17) reports *allocated* factorization memory including
+BLR workspace — at these sizes BLR shows no additional saving by this metric (the LDL^T
+halving is the dominant effect); its benefit is expected at larger fronts and tighter
+memory ceilings.
+
+Cable-port validation (`bench/cableport_validate.py`, deg-3 coax vs analytic
+transmission-line theory, 3 frequencies, single rank) — **VERDICT: PASS**. Symmetric
+mode matches theory *identically* to LU (same max error to every displayed digit):
+
+| coax (epsr1 -> epsr2) | dofs | max mag rel-err vs theory (lu = sym) | max phase err | max|dS| sym vs lu | factor mem sym/lu |
+|---|---|---|---|---|---|
+| 0: 2.1 -> 2.1(1-1j) | 38k-class | 3.321e-04 | 0.130 deg | 5.7e-14 | 2067 MB / — |
+| 3: 2.1 -> 12.1 | 544,731 | 3.278e-04 | 0.457 deg | 4.9e-12 | 8700 / 15892 MB (0.547) |
+| 5: 1.3 -> 2.1(1-0.8j) | small | 3.576e-04 | 0.040 deg | 8.3e-15 | 984 / 1774 MB (0.555) |
+
+Single-rank LDL^T/LU memory ratios (~0.55) run tighter than the 8-rank MPI ladder
+(~0.59) — per-rank workspace overhead grows with rank count.

@@ -709,6 +709,20 @@ class Scatt3DProblem():
         sweep_mode = solver_opts.pop('sweep_mode', False)
         sweep_max_it = solver_opts.pop('sweep_max_it', 25)
         sweep_rtol = solver_opts.pop('sweep_rtol', 1e-8)
+        ## 'symmetric': True - the assembled operator is COMPLEX SYMMETRIC (curl-curl, mass,
+        ## diagonal-tensor PML and the port Robin term are all symmetric; PEC elimination is
+        ## applied symmetrically), so MUMPS can factorize it as LDL^T (SYM=2) storing roughly
+        ## HALF of what LU stores. Stacks with blr_tol for further compression. This is the
+        ## correct version of the old commented-out cholesky experiment (which could hit the
+        ## SPD-assuming path and NaN out); PETSc routes PCCHOLESKY + a SYMMETRIC-flagged
+        ## complex AIJ matrix to MUMPS SYM=2 with numerical pivoting - valid for indefinite
+        ## complex-symmetric systems.
+        ## REQUIREMENT: MUMPS LDLT calls the BLAS-extension GEMMT. OpenBLAS 0.3.26 (the
+        ## active BLAS in dolfinx/dolfinx:stable) has a zgemmt kernel that SEGFAULTS inside
+        ## ZMUMPS 5.8.2 frontal updates (even single-threaded), and the image's reference
+        ## BLAS has no GEMMT at all. Run with bench/zgemmt_fix.f90 LD_PRELOADed (baked into
+        ## bench/Dockerfile.bench) or use a BLAS with a working GEMMT (e.g. MKL).
+        sym_mode = solver_opts.pop('symmetric', False)
         self.solve_type = 'sweep' if sweep_mode else 'direct'
         
         #petsc_options={"ksp_type": "lgmres", "pc_type": "sor", **self.solver_settings, **conv_sets} ## (https://petsc.org/release/manual/ksp/)
@@ -773,9 +787,16 @@ class Scatt3DProblem():
         A_anchor = dolfinx.fem.petsc.create_matrix(a_form) if sweep_mode else None ## holds the last-factorized ("anchor") frequency's matrix in sweep mode
         self._sweep_anchored = False
 
+        if(sym_mode): ## flag BEFORE the KSP ever sees the matrix
+            A_mat.setOption(PETSc.Mat.Option.SYMMETRIC, True)
+            A_mat.setOption(PETSc.Mat.Option.SYMMETRY_ETERNAL, True)
+            if(A_anchor is not None):
+                A_anchor.setOption(PETSc.Mat.Option.SYMMETRIC, True)
+                A_anchor.setOption(PETSc.Mat.Option.SYMMETRY_ETERNAL, True)
+
         opts = PETSc.Options()
         prefix = 'theScatteringProblem_'
-        opts[prefix+'pc_type'] = 'lu'
+        opts[prefix+'pc_type'] = 'cholesky' if sym_mode else 'lu'
         opts[prefix+'pc_factor_mat_solver_type'] = 'mumps'
         opts[prefix+'mat_mumps_icntl_14'] = 50 ## extra workspace margin - avoids spurious failures/NaN results from MUMPS underallocation
         if(sweep_mode):
@@ -834,6 +855,14 @@ class Scatt3DProblem():
             dolfinx.fem.petsc.set_bc(b_vec, bcs)
             ksp.solve(b_vec, E_h.x.petsc_vec)
             E_h.x.scatter_forward()
+            try: ## record MUMPS factorization memory (INFOG(16)=max MB/proc, INFOG(17)=total MB) - key metric for the memory-target benchmarks
+                Fmat = pc.getFactorMatrix()
+                self.lastFactorMemMB = (Fmat.getMumpsInfog(16), Fmat.getMumpsInfog(17))
+                if(not getattr(self, '_factor_mem_printed', False) and self.comm.rank == self.model_rank and self.verbosity > 1):
+                    print(f'MUMPS factor memory: {self.lastFactorMemMB[0]} MB max/proc, {self.lastFactorMemMB[1]} MB total')
+                    self._factor_mem_printed = True
+            except Exception:
+                pass
             its = ksp.getIterationNumber()
             if(sweep_mode and (ksp.getConvergedReason() < 0 or its > sweep_max_it)): ## anchor too stale: re-factorize at this frequency and re-solve
                 if(self.comm.rank == self.model_rank and self.verbosity > 1.5):
