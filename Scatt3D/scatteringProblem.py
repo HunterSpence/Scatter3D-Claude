@@ -855,11 +855,16 @@ class Scatt3DProblem():
             dolfinx.fem.petsc.set_bc(b_vec, bcs)
             ksp.solve(b_vec, E_h.x.petsc_vec)
             E_h.x.scatter_forward()
-            try: ## record MUMPS factorization memory (INFOG(16)=max MB/proc, INFOG(17)=total MB) - key metric for the memory-target benchmarks
+            try: ## record MUMPS factorization memory - key metric for the memory-target benchmarks.
+                ## INFOG(16/17) = ANALYSIS-PHASE ESTIMATES (max MB/proc, total MB);
+                ## INFOG(21/22) = memory EFFECTIVELY USED during factorization (max MB/proc, total MB)
+                ## - the measured value, use THIS for memory-ratio claims.
                 Fmat = pc.getFactorMatrix()
-                self.lastFactorMemMB = (Fmat.getMumpsInfog(16), Fmat.getMumpsInfog(17))
+                self.lastFactorMemMB = (Fmat.getMumpsInfog(16), Fmat.getMumpsInfog(17),
+                                        Fmat.getMumpsInfog(21), Fmat.getMumpsInfog(22))
                 if(not getattr(self, '_factor_mem_printed', False) and self.comm.rank == self.model_rank and self.verbosity > 1):
-                    print(f'MUMPS factor memory: {self.lastFactorMemMB[0]} MB max/proc, {self.lastFactorMemMB[1]} MB total')
+                    print(f'MUMPS factor memory: {self.lastFactorMemMB[0]} MB max/proc, {self.lastFactorMemMB[1]} MB total (analysis estimates); '
+                          f'effective used: {self.lastFactorMemMB[2]} MB max/proc, {self.lastFactorMemMB[3]} MB total')
                     self._factor_mem_printed = True
             except Exception:
                 pass

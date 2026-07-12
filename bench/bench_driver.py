@@ -41,9 +41,16 @@ prob = scatteringProblem.Scatt3DProblem(
     E_ref_anim=False, makeOptVects=False, solver_settings=solver_settings, **extra)
 t2 = timer()
 mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024**2
+## aggregate RSS across ranks: the sum is the operational "machine memory" number —
+## a single rank's RSS understates MPI runs
+mem_sum = comm.allreduce(mem, op=MPI.SUM)
+mem_max = comm.allreduce(mem, op=MPI.MAX)
 ndofs = getattr(prob, "ndofs", None) or getattr(getattr(prob, "FEMmesh_ref", None), "ndofs", "?")
 if comm.rank == 0:
     np.savez(f"S_{tag}.npz", S_ref=prob.S_ref, fvec=prob.fvec)
+    fmem = getattr(prob, "lastFactorMemMB", None)
     print(f"BENCH_RESULT tag={tag} h={h} deg={deg} Nf={Nf} ndofs={ndofs} "
           f"mesh_s={t1-t0:.1f} solve_s={t2-t1:.1f} maxrss_gb={mem:.2f} "
+          f"rss_sum_gb={mem_sum:.2f} rss_max_gb={mem_max:.2f} "
+          f"mumps_mem_mb={list(fmem) if fmem else None} "
           f"solver={json.dumps(solver_settings)}")

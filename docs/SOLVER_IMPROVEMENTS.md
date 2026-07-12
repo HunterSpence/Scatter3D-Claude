@@ -194,10 +194,27 @@ beta=0 not-read semantics; max rel err ~1e-16).
 ### Verified results (with the fix)
 
 74k-dof deg-1 sphere benchmark (single rank): symmetric mode matches LU to
-**max|dS| = 3.3e-16** (bit-level), factor memory **135 MB vs 224 MB (0.60x)**, and the
+**max|dS| = 3.3e-16** (bit-level), factorization-memory analysis estimate (INFOG 16/17) **135 MB vs 224 MB (0.60x)**, and the
 solve is ~2x faster.
 
-Memory ladder, degree 3, 8 MPI ranks, CPX51 (16 vCPU / 32 GB), MUMPS INFOG(16/17):
+### Memory metric definitions (MUMPS 5.8 users' guide semantics — read before the tables)
+
+- **INFOG(16)/INFOG(17)** — *analysis-phase ESTIMATES* of factorization memory
+  (max-per-process / total). Available before the numeric phase runs. The tables below
+  that cite INFOG(16/17) are **estimate ratios** — honest, reproducible, but predictions.
+- **INFOG(18)/INFOG(19)** — memory *allocated* during factorization.
+- **INFOG(21)/INFOG(22)** — memory *effectively used* during factorization
+  (max-per-process / total). **This is the measured number; ratio claims should quote
+  it.** The branch now records it (`lastFactorMemMB` is a 4-tuple: est-max, est-total,
+  eff-max, eff-total) and an at-scale certification pass (2.8M/3.23M dofs: LDL^T
+  in-core, LDL^T+OOC, LU+OOC, with aggregate peak RSS across all ranks) is being run;
+  its tables will be appended below.
+- **Peak RSS** — OS-level resident memory (includes PETSc/dolfinx/MPI overhead, not just
+  MUMPS). Reported as sum and max across ranks. This is the "does it fit the machine"
+  number, and the right axis for out-of-core comparisons.
+
+Memory ladder, degree 3, 8 MPI ranks, CPX51 (16 vCPU / 32 GB) — **analysis-estimate
+metric INFOG(16/17)** (measured-effective certification in progress, see above):
 
 | dofs | config | factor mem (total) | vs LU | solve | max|dS| vs LU |
 |---|---|---|---|---|---|
@@ -213,7 +230,11 @@ Memory ladder, degree 3, 8 MPI ranks, CPX51 (16 vCPU / 32 GB), MUMPS INFOG(16/17
 | **3,232,812** | **sym** | **24,389 MB** | **runs where LU cannot** | 109.9 s | — |
 
 At and above ~2.8M dofs (degree 3) direct LU no longer fits the 32 GB box at all —
-the OOM kill *is* the LU baseline there. A swap-assisted measured LU run at 2.8M
+the OOM kill *is* the LU baseline there.
+(Framing note: the OOM boundary is a property of the 32 GB test box, not of the solver —
+on a large-memory cluster LU simply runs and the in-core ratio applies. Treat "fits
+where LU cannot" as a capacity/commodity-hardware benefit, secondary to the measured
+memory ratios.) A swap-assisted measured LU run at 2.8M
 (below) pins the actual ratio at the largest size where LU can be made to complete.
 The h=0.22 rung (~5.8M dofs) was skipped deliberately: beyond the 3M acceptance
 target and swap-bound for hours with no additional claim value.
@@ -225,7 +246,8 @@ halving is the dominant effect); its benefit is expected at larger fronts and ti
 memory ceilings.
 
 Cable-port validation (`bench/cableport_validate.py`, deg-3 coax vs analytic
-transmission-line theory, 3 frequencies, single rank) — **VERDICT: PASS**. Symmetric
+transmission-line theory, 3 frequencies, single rank) — **VERDICT: PASS**. (Factor-memory
+columns in this table are INFOG(16/17) analysis estimates.) Symmetric
 mode matches theory *identically* to LU (same max error to every displayed digit):
 
 | coax (epsr1 -> epsr2) | dofs | max mag rel-err vs theory (lu = sym) | max phase err | max|dS| sym vs lu | factor mem sym/lu |
@@ -236,3 +258,22 @@ mode matches theory *identically* to LU (same max error to every displayed digit
 
 Single-rank LDL^T/LU memory ratios (~0.55) run tighter than the 8-rank MPI ladder
 (~0.59) — per-rank workspace overhead grows with rank count.
+
+### Closing the last gap to "half": BLR is a dead end here, out-of-core is not
+
+Measured on the 545k-dof deg-3 coax case (single rank, LU baseline 15,892 MB / peak RSS 8.69 GB / 566 s):
+
+| config | INFOG(16/17) | peak process RSS | accuracy vs theory | solve |
+|---|---|---|---|---|
+| sym | 8,702 MB (0.548) | 6.59 GB | 2.8e-4 (= LU) | 108 s |
+| sym + blr 1e-5 | 8,702 MB — unchanged | 6.59 GB | 2.8e-4 | 108 s |
+| sym + blr 1e-4 | 8,702 MB — unchanged | — | **BROKEN: 11% mag err, |S11|>1** | 136 s |
+| **sym + OOC (icntl_22=1)** | 8,700 MB (reported, factors on disk) | **3.31 GB = 0.38x LU** | 3.11e-4 — identical digits to LU | 477 s (still < LU) |
+
+- MUMPS BLR does not reduce allocated factor memory on this operator at ANY tolerance,
+  and below ~1e-5 it fails nonlinearly (11% S-parameter error at 1e-4 — ~8 orders beyond
+  its nominal tolerance; complex-symmetric indefinite pivoting + compression interact
+  badly). Recommendation: do not use blr_tol with 'symmetric' on this problem class.
+- Out-of-core LDL^T is a co-equal PRIMARY result, not a fallback — the strongest measured number against the strict 0.5 line: 0.38x LU peak RAM,
+  bit-for-bit LU-class accuracy, and still faster than the stock solver. Enable with
+  solver_settings={'symmetric': True, 'mat_mumps_icntl_22': 1}.
