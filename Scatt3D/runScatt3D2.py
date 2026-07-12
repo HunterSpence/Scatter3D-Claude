@@ -1,0 +1,382 @@
+# encoding: utf-8
+### This file is for the measurements, continuing from simulations in runScatt3D
+#
+# Adapted from 2D code started by Daniel Sjoberg, (https://github.com/dsjoberg-git/rotsymsca, https://github.com/dsjoberg-git/ekas3d) approx. 2024-12-13 
+# Alexandros Pallaris, after that... and also before that, to some extent
+import os
+import numpy as np
+import dolfinx, ufl, basix
+import dolfinx.fem.petsc
+from mpi4py import MPI
+import gmsh
+import matplotlib
+from matplotlib import pyplot as plt
+import matplotlib.lines as mlines
+import functools
+from scipy.constants import c as c0, mu_0 as mu0, epsilon_0 as eps0, pi
+
+import sys, petsc4py
+petsc4py.init(sys.argv)
+from petsc4py import PETSc
+import scipy
+import h5py
+
+import psutil
+import threading
+from memory_profiler import memory_usage
+from timeit import default_timer as timer
+import time
+import sys
+import meshMaker
+import scatteringProblem
+import memTimeEstimation
+import postProcessing
+eta0 = np.sqrt(mu0/eps0)
+
+##MAIN STUFF
+if __name__ == '__main__':
+    # MPI settings
+    comm = MPI.COMM_WORLD
+    model_rank = 0 ## rank for printing and definitions, etc.
+    verbosity = 2 ## 3 will print everything. 2, most things. 1, just the main process stuff.
+    MPInum = comm.size
+    t1 = timer()
+    
+    if(len(sys.argv) == 1): ## assume computing on local computer, not cluster. In jobscript for cluster, give a dummy argument
+        folder = 'data3DLUNARC/'
+        filename = 'localCompTimesMems.npz'
+        matplotlib.use("QtAgg") ## so that plots actually appear
+        plt.rc('axes', titlesize=16)     # fontsize of the axes title
+        plt.rc('axes', labelsize=20)    # fontsize of the x and y labels
+        plt.rc('xtick', labelsize=14)    # fontsize of the tick labels
+        plt.rc('ytick', labelsize=14)    # fontsize of the tick labels
+        plt.rc('legend', fontsize=12)    # legend fontsize
+        plt.rc('figure', titlesize=30)  # fontsize of the figure title'
+        plt.rc('text', usetex=True) ## use latex to generate the font
+        plt.rc('text.latex', preamble=r'\usepackage{amsmath} \usepackage{bm}') ## load in some packages so I can bold stuff
+    else:
+        filename = 'prevRuns.npz'
+        folder = 'data3D/'
+        
+    runName = 'testRun' # testing - the default name
+    if(verbosity>2):
+        print(f"{comm.rank=} {comm.size=}, {MPI.COMM_SELF.rank=} {MPI.COMM_SELF.size=}, {MPI.Get_processor_name()=}")
+    if(comm.rank == model_rank):
+        print(f'runScatt3D starting with {MPInum} MPI process(es) (main process on {MPI.Get_processor_name()=}):')
+    sys.stdout.flush()
+            
+    def measurementScript(h = 1/3.5, degree = 3, runName=runName, angles = np.arange(0, 360, 20, dtype=float), mesh_settings={}, prob_settings={}, dutForSimSolution=False):
+        ## For measurements with patch antennas of a rectangular block. Four antennas, which are rotated by 30 degree steps to cover 360 degrees.
+        prevRuns = memTimeEstimation.runTimesMems(folder, comm, filename = filename)
+        mesh_settings = {'h': h, 'N_antennas': 4, 'order': degree, 'antenna_type': '6GHz measurement', 'defect_geom': ''} | mesh_settings ## uses settings given before those specified here ## settings for the meshMaker
+        prob_settings = {'E_ref_anim': True, 'E_dut_anim': True, 'E_anim_allAnts': False, 'ErefEdut': False, 'verbosity': verbosity, 'dataFolder': folder, 'computeBoth': False, 'makeOptVects': False} | prob_settings
+        
+        epsrs=[]
+        for n in range(mesh_settings['N_antennas']): ## each patch has 3 dielectric zones
+            epsrs.append(4.3*(1 - .11/4.4*1j)) ## box
+            epsrs.append(4.3*(1 - .11/4.4*1j)) ## patch
+            epsrs.append(2.1*(1 - 0.01j)) ## coax dielectric
+            epsrs.append(2.7*(1 - 0.01j)) ## PLA printed holder - guess of permittivity
+        prob_settings = prob_settings | {'antenna_mat_epsrs': epsrs}
+        if(dutForSimSolution): ## test-case simulation
+            for angle in angles:
+                if(os.path.isfile(folder+runName+f'_angle{angle}'+'output.npz')): ## check if the angle has already been run
+                    if(comm.rank == model_rank):
+                        print(f'Already computed run with {angle=}, skipping...')
+                    continue
+                else:
+                    if(comm.rank == model_rank):
+                        print(f'{folder+runName}_angle{angle}output.npz not found - Computing run with angle={angle}:')
+                testMesh = meshMaker.MeshInfo(comm, folder+runName+f'_angle{angle}'+'mesh.msh', reference = False, verbosity = verbosity, phi_antennas=-angle, **mesh_settings)
+                prob = scatteringProblem.Scatt3DProblem(comm, testMesh, testMesh, MPInum = MPInum, name = runName+f'_angle{angle}', fem_degree=degree, computeImmediately=False, dutOnRefMesh=False, **prob_settings)
+                prob.compute(computeRef=False, makeOptVects=False)
+                prob.makeOptVectors(DUTMesh=True, skipQs=True)
+                prob.deleteSol() ## remove saved E-fields afterward, since this generates too much data
+        else: ## reference simulation
+            rec_mesh_settings = {'justInterpolationSubmesh': True, 'interpolationSubmeshSize': 1/10} | mesh_settings | {'viewGMSH': False, 'reference': True} ## uses settings given before those specified here ## settings for the meshMaker
+            recMesh = meshMaker.MeshInfo(comm, folder+runName+'mesh.msh', verbosity = verbosity, **rec_mesh_settings)
+            for angle in angles: ## 20 degree spacing. Should rotate in opposite direction to measurements, since this rotates the antennas while measurements rotate the object. (this way the E-fields in the object are all aligned)
+                if(os.path.isfile(folder+runName+f'_angle{angle}'+'output-qs.xdmf')): ## check if the angle has already been run
+                    if(comm.rank == model_rank):
+                        print(f'Already computed run with {angle=}, skipping...')
+                    continue
+                else:
+                    if(comm.rank == model_rank):
+                        print(f'{folder+runName}_angle{angle}output-qs.xdmf not found - Computing run with angle={angle}:')
+                refMesh = meshMaker.MeshInfo(comm, folder+runName+f'_angle{angle}'+'mesh.msh', verbosity = verbosity, phi_antennas=-angle, **mesh_settings)
+                #prevRuns.memTimeEstimation(refMesh.ncells, doPrint=True, MPInum = comm.size)
+                #refMesh.plotMeshPartition()
+                prob = scatteringProblem.Scatt3DProblem(comm, refMesh, MPInum = MPInum, name = runName+f'_angle{angle}', fem_degree=degree, **prob_settings)
+                prob.makeOptVectors(reconstructionMesh=False, saveName=prob.name+'_regMesh') ## to check if everything is correct
+                ## make the opt vects on the rec mesh
+                prob.switchToRecMesh(recMesh)
+                prob.makeOptVectors(reconstructionMesh=True)
+                prob.deleteSol() ## remove saved E-fields afterward, since this generates too much data
+                prevRuns.memTimeAppend(prob)
+        return prob
+    
+    def testPatchPattern(h = 1/3.5, degree=3, freqs = np.array([6e9]), name='6GHzpatchPatternTest', coax_outh=2.5e-3, showPlots=True, epsr_FR4=4.3*(1-.11/4.4*1j), viewGMSH=False, atype='6GHz measurement'): ## run a spherical domain and object, test the far-field pattern from a single patch antenna near the center
+        runName = name
+        prevRuns = memTimeEstimation.runTimesMems(folder, comm, filename = filename)
+        refMesh = meshMaker.MeshInfo(comm, reference = True, viewGMSH = viewGMSH, verbosity = verbosity, N_antennas=1, coax_outh=coax_outh, domain_radius=1.6, PML_thickness=0.5, h=h, domain_geom='sphere', antenna_radius=0, antenna_type=atype, object_geom='', defect_geom='', FF_surface = True, order=degree)
+        epsrs=[]
+        epsrs.append(epsr_FR4) ## susbtrate - patch
+        epsrs.append(epsr_FR4) ## substrate under patch
+        epsrs.append(2.1*(1 - 0.01j))
+        epsrs.append(2.7*(1 - 0.01j))
+        #refMesh.plotMeshPartition()
+        #prevRuns.memTimeEstimation(refMesh.ncells, doPrint=True, MPInum = comm.size)
+        if(len(freqs) == 1): ## plot the given frequency, if there is only 1
+            prob = scatteringProblem.Scatt3DProblem(comm, refMesh, verbosity=verbosity, name=runName, MPInum=MPInum, makeOptVects=False, freqs = freqs, fem_degree=degree, antenna_mat_epsrs=epsrs)
+            prob.calcFarField(reference=True, plotFF=True, showPlots=showPlots)
+        else: ## save Ss
+            prob = scatteringProblem.Scatt3DProblem(comm, refMesh, verbosity=verbosity, name=runName, MPInum=MPInum, makeOptVects=False, freqs = freqs, fem_degree=degree, antenna_mat_epsrs=epsrs)
+            prob.makeOptVectors(justSaveNpz=True)
+        prevRuns.memTimeAppend(prob)
+    
+    def patchSsPlot(sims, feko=''): ## Makes a plot of the patch S11 vs the FEKO S11, for some given h/lambdas
+        colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:purple', 'tab:red']
+        markers = ['o', 'v', 'o', 'v', 'o']
+        i=0
+        measFolder = '/mnt/c/Users/al8032pa/Work Folders/Documents/antenna measurements/Microwave Imaging/Patch Data/'
+        
+        for sim in sims: ## plot the FEM sims
+            data = np.load(folder+sim+'output.npz')
+            S11 = data['S_ref'][:, 0, 0]
+            fvec = data['fvec']
+             
+            plt.plot(fvec/1e9, 20*np.log10(np.abs(S11)), label=sim, linewidth=2, color=colors[i], marker=markers[i], markevery=10-i, markersize=8)
+            i = i+1
+        
+        if(feko==''):
+            fekof = measFolder+'feko patch S11.dat'
+        else:
+            fekof = feko
+        fekoData = np.transpose(np.loadtxt(fekof, skiprows = 2))
+        plt.plot(fekoData[0]/1e9, 20*np.log10(np.abs(fekoData[1]+1j*fekoData[2])), label='FEKO', color='tab:purple')#, marker='+', markevery=8, markersize=10)
+        
+        
+        for patch in ['1', '2', '3', '4']:
+            #measData = np.transpose(np.loadtxt(measFolder+'Patches S11 before holders/'+patch+'.csv', skiprows = 3))
+            #measData = np.transpose(np.loadtxt(measFolder+'Patch S11s in Holders Individually/'+patch+'.csv', skiprows = 3))
+            measData = np.transpose(np.loadtxt(measFolder+'Patch S11s individually/'+patch+'.csv', skiprows = 3))
+            if(patch=='1'):
+                plt.plot(measData[0]/1e9, 20*np.log10(np.abs(measData[1]+1j*measData[2])), label='Measured', linestyle=':')#, color='tab:green', marker='+', markevery=8, markersize=10)
+            else:
+                plt.plot(measData[0]/1e9, 20*np.log10(np.abs(measData[1]+1j*measData[2])), linestyle=':')#, color='tab:green', marker='+', markevery=8, markersize=10)
+        
+        plt.grid()
+        plt.ylabel(r'$|$S$_{11}|$ [dB]')
+        plt.xlabel(r'Frequency [GHz]')
+        plt.title(r'Patch Antenna Reflection Coefficient')
+        plt.legend()
+        plt.tight_layout()
+        
+        for patch in ['1', '2', '3', '4']:
+            fig, (ax1, ax2) = plt.subplots(2, 1)
+            i=0
+            
+            for sim in sims:
+                data = np.load(folder+sim+'output.npz')
+                S11 = data['S_ref'][:, 0, 0]
+                fvec = data['fvec']
+                 
+                ax1.plot(fvec/1e9, np.unwrap(np.angle(S11)), label=sim, linewidth=2, color=colors[i], marker=markers[i], markevery=10-i, markersize=8)
+                ax2.plot(fvec/1e9, 20*np.log10(np.abs(S11)), label=sim, linewidth=2, color=colors[i], marker=markers[i], markevery=10-i, markersize=8)
+                i = i+1
+            
+            fekof = measFolder+'feko patch S11.dat'
+            fekoData = np.transpose(np.loadtxt(fekof, skiprows = 2))
+            ax1.plot(fekoData[0]/1e9, np.unwrap(np.angle(fekoData[1]+1j*fekoData[2])), label='FEKO', color='tab:purple')#, marker='+', markevery=8, markersize=10)
+            ax2.plot(fekoData[0]/1e9, 20*np.log10(np.abs(fekoData[1]+1j*fekoData[2])), label='FEKO', color='tab:purple')
+            
+            #===================================================================
+            # if(patch != '1'):
+            #     measData = np.transpose(np.loadtxt(measFolder+'Patch S11s in holders/6GHzPatch'+patch+'a_InSetup.csv', dtype=complex, skiprows = 3, delimiter=','))
+            #     ax1.plot(measData[0]/1e9, np.unwrap(np.angle(measData[int(patch)])), label='Meas.'+patch+'a')
+            #     ax2.plot(measData[0]/1e9, 20*np.log10(np.abs(measData[int(patch)])), label='Meas.'+patch+'a')#, color='tab:green', marker='+', markevery=8, markersize=10)
+            # measData = np.transpose(np.loadtxt(measFolder+'Patch S11s in holders/6GHzPatch'+patch+'b_InSetup.csv', dtype=complex, skiprows = 3, delimiter=','))
+            # ax1.plot(measData[0]/1e9, np.unwrap(np.angle(measData[int(patch)])), linestyle=':', label='Meas.'+patch+'b')#, color='tab:green', marker='+', markevery=8, markersize=10)
+            # ax2.plot(measData[0]/1e9, 20*np.log10(np.abs(measData[int(patch)])), linestyle=':', label='Meas.'+patch+'b')
+            #===================================================================
+            
+            measData = np.transpose(np.loadtxt(measFolder+'Patch S11s in Holders Individually/'+patch+'.csv', skiprows = 3))
+            ax1.plot(measData[0]/1e9, np.unwrap(np.angle(measData[1]+1j*measData[2])), linestyle=':', label='Meas.'+patch)#, color='tab:green', marker='+', markevery=8, markersize=10)
+            ax2.plot(measData[0]/1e9, 20*np.log10(np.abs(measData[1]+1j*measData[2])), linestyle=':', label='Meas.'+patch)
+        
+            plt.grid()
+            ax1.set_ylabel(r'Angle(S$_{11}$) [rad.]')
+            ax2.set_ylabel(r'Mag(S$_{11}$) [dB]')
+            plt.xlabel(r'Frequency [GHz]')
+            plt.title(r'Patch Antenna Reflection Coefficient')
+            plt.legend()
+            plt.tight_layout()
+        plt.show()
+        
+    def cablePortTest(h, epsr1, epsr2, d, L, freqs=np.linspace(5.4e9, 7.2e9, 1), degree=3, runName='cablePortTest', prints=True): ## checks the port by simulating transmission through a coaxial cable in 2 sections and capped with a short. First section by the port has epsr1, length L. Second has epsr2, length d
+        ## theory seems to match the simulated values reasonably well, for h~<1/3.5
+        mesh_settings = {'h': h, 'N_antennas': 1, 'order': degree, 'antenna_type': 'coaxTest', 'object_geom': None, 'domain_geom': None, 'object_height': L, 'defect_height': d, 'antenna_epsrs': [epsr1,epsr2]} ## uses settings given before those specified here ## settings for the meshMaker
+        prob_settings = {'E_ref_anim': True, 'freqs': freqs, 'E_dut_anim': False, 'E_anim_allAnts': False, 'ErefEdut': False, 'verbosity': verbosity, 'antenna_mat_epsrs': [epsr1,epsr2], 'dataFolder': folder, 'computeBoth': False, 'makeOptVects': False}
+        
+        refMesh = meshMaker.MeshInfo(comm, folder+runName+'mesh.msh', viewGMSH=False, reference = True, verbosity = verbosity, **mesh_settings)
+        prob = scatteringProblem.Scatt3DProblem(comm, refMesh, MPInum = MPInum, name = runName, fem_degree=degree, **prob_settings)
+        prob.makeOptVectors(skipQs=True)
+        k1 = 2*pi/c0*freqs*np.sqrt(epsr1)
+        k2 = 2*pi/c0*freqs*np.sqrt(epsr2)
+        Z1 = eta0/np.sqrt(epsr1)/(2*pi)*np.log(refMesh.coax_outr/refMesh.coax_inr)
+        Z2 = eta0/np.sqrt(epsr2)/(2*pi)*np.log(refMesh.coax_outr/refMesh.coax_inr)
+        theory = ((-1 + Z2/Z1*1j*np.tan(k2*d)) / (1 + Z2/Z1*1j*np.tan(k2*d)))*np.exp(-2j*k1*L)
+        sim = prob.S_ref.flatten()
+        if(prints and comm.rank == model_rank):
+            print(f'S11s: Simulated: {sim}, Theoretical: {theory}')
+            print(f'Mag/Phase: {np.abs(sim)}/{np.angle(sim)}, {np.abs(theory)}/{np.angle(theory)}')
+            print(f'Rel. Diff, angle diff: {np.abs(np.abs(theory)-np.abs(sim))/np.abs(theory)}/{np.abs(np.angle(sim)-np.angle(theory))*180/pi}')
+        print(f'Rel. Diff, angle diff: {np.abs(np.abs(theory)-np.abs(sim))/np.abs(theory)}/{np.abs(np.angle(sim)-np.angle(theory))*180/pi}')
+        return sim, theory
+        
+    def cablePortRMSError(h=1/3.5, freqs=np.linspace(6.1e9, 6.4e9, 1)): ## finds the RMS error in phase and magnitude for 10 coaxs using cablePortTest
+        coaxs=[[2.1*(1-0.01j), 2.1*(1-1j), 1e-3, 1e-3], [5.1*(1-0.001j), 8.1*(1-0.01j), 4e-3, 2e-3], [2.7*(1-0.01j), 2.1*(1-0.01j), 3e-3, 1e-3], [2.1*(1-0.01j), 12.1*(1-0.01j), 1e-3, 8e-3], [2.1*(1-0.01j), 23.1*(1-0.04j), 6e-3, 3e-3],
+        [1.3*(1-0.01j), 2.1*(1-0.8j), .5e-3, .4e-3], [2.1*(1-0.01j), 8.1*(1-0.01j), 1.1e-3, .1e-3], [2.1*(1-0.01j), 12.1*(1-0.1j), 3e-3, 1e-3], [2.1*(1-0.1j), 2.1*(1-0.01j), 1e-3, 10e-3], [75*(1-0.01j), 76.1*(1-0.05j), 8e-3, 2e-3]]
+        magErrs = []; phaseErrs = []
+        for coax in coaxs:
+            if(comm.rank == model_rank):
+                print(f'Run with coax: {coax}')
+            sim, theory = cablePortTest(h, coax[0], coax[1], coax[2], coax[3], freqs, prints=False)
+            magErrs.append( np.abs(np.abs(sim)-np.abs(theory))/np.abs(theory) )
+            phaseErrs.append( np.abs(np.unwrap(np.angle(sim))-np.unwrap(np.angle(theory))) )
+        
+        if(comm.rank == model_rank):
+            print(f'max. ({h=})',np.max(magErrs)*100, np.max(np.abs(phaseErrs)*180/pi))
+            print(f'mean ({h=})',np.mean(magErrs)*100, np.mean(phaseErrs)*180/pi)
+            print(f'rms ({h=})',np.sqrt(np.mean(np.square(magErrs)))*100, np.sqrt(np.mean(np.square(phaseErrs)))*180/pi)
+        
+    ###
+    ###
+    
+    #folder = 'data3D/' ## if running something locally
+    
+    #runName = f'measurements_init_'
+    #runName = f'measurements_init_actuallMeasuredFreqs_'
+    #runName = f'measurements_corrected_' ## using new FR4 epsr=4.3, accidentally overrode old one
+    #runName = f'measurements_corrected_smallmesh_' ## made it to 240 degrees before seeming to time out
+    #runName = f'meas_newnew'
+    runName = f'meas_newnew2' ## contains the 'cyl fill' defect in the mesh
+    #runName = f'meas_newnew_altmesh' ## h = 1/4.2 instead of 1/4, only has angle 0
+    
+    angles = np.arange(0, 360, 40, dtype=float) ## measured with 20-degree spacing, simulate 40 degree so its faster
+    measFreqs = np.linspace(5.4e9, 7.2e9, 201) ## the measured frequencies
+    freqs = [measFreqs[i] for i in np.arange(len(measFreqs)) if i%10==0] ## simulate these 21 frequencies
+    
+    measurementScript(h=1/4, degree=3, runName=runName, angles=angles,
+                    mesh_settings={'viewGMSH': False, 'N_antennas': 4, 'f0': 6e9, 'reference': False, 'antenna_type': '6GHz measurement', 'antenna_radius': 0.18, 'object_geom': '6GHz measurement', 'defect_geom': '6GHz measurement cyl fill', 'domain_height': 1, 'domain_radius': 4.2},
+                    prob_settings={'freqs': freqs, 'material_epsrs' : [2.73 - .014j]}) # epsr of POM taken from Complex Permittivity Measurements of Common Plastics Over Variable Temperatures, Bill Riddle
+    
+    testrunName = f'measurements_noobject'
+    #===========================================================================
+    # measurementScript(h=1/3.5, degree=3, runName=testrunName, angles=angles, dutForSimSolution=True,
+    #                 mesh_settings={'viewGMSH': False, 'N_antennas': 4, 'f0': 6e9, 'antenna_type': '6GHz measurement', 'antenna_radius': 0.18, 'object_geom': '', 'domain_height': 1, 'domain_radius': 4.2},
+    #                 prob_settings={'freqs': freqs, 'material_epsrs' : [2.73 - .014j]}) # epsr of POM taken from Complex Permittivity Measurements of Common Plastics Over Variable Temperatures, Bill Riddle
+    #===========================================================================
+    
+    #testrunName = f'{runName}dut_POMfill_' ## the test case where there is a hole partially filled with a POM cylinder
+    #===========================================================================
+    # measurementScript(h=1/3.5, degree=3, runName=testrunName, angles=angles, dutForSimSolution=True,
+    #                 mesh_settings={'viewGMSH': False, 'N_antennas': 4, 'f0': 6e9, 'antenna_type': '6GHz measurement', 'antenna_radius': 0.18, 'object_geom': '6GHz measurement', 'defect_geom': '6GHz measurement POM cyl', 'domain_height': 1, 'domain_radius': 4.2},
+    #                 prob_settings={'freqs': freqs, 'material_epsrs' : [2.73 - .014j], 'defect_epsrs' : [1.0 - .0j]}) # epsr of POM taken from Complex Permittivity Measurements of Common Plastics Over Variable Temperatures, Bill Riddle
+    #===========================================================================
+    
+    testrunName = f'{runName}dut_2.8fill_' ## the test case where there is a hole totally filled with a epsr=2.5 cylinder
+    #===========================================================================
+    # measurementScript(h=1/4, degree=3, runName=testrunName, angles=angles, dutForSimSolution=True,
+    #                 mesh_settings={'viewGMSH': False, 'N_antennas': 4, 'f0': 6e9, 'antenna_type': '6GHz measurement', 'antenna_radius': 0.18, 'object_geom': '6GHz measurement', 'defect_geom': '6GHz measurement cyl fill', 'domain_height': 1, 'domain_radius': 4.2},
+    #                 prob_settings={'freqs': freqs, 'material_epsrs' : [2.73 - .014j], 'defect_epsrs' : [2.8*(1 - .01j)]}) 
+    #===========================================================================
+    
+    ## try the postprocessing with just sim. stuff:
+    #angles = [0.0]
+    #postProcessing.solveFromQs(folder+runName+f'_angle{angles[0]}', plotSs=False, maxRefl=1, solutionName=f'_Sdutfrom{testrunName}', onlyAPriori=True, SparamName=f'{folder}{testrunName}_angle{angles[0]}', returnResults=[3])
+    #postProcessing.solveFromQs(folder+runName+f'_angle{angles[0]}', maxRefl=1, extraProbs = [folder+runName+f'_angle{angle}' for angle in angles[1:]], extraSparamNames=[folder+testrunName+f'_angle{angle}' for angle in angles[1:]], solutionName=f'_Sdutfrom{testrunName}', onlyAPriori=True, SparamName=f'{folder}{testrunName}_angle{angles[0]}', returnResults=[3])
+    ## and interpolating onto another mesh
+    rec_mesh_settings = {'justInterpolationSubmesh': True, 'interpolationSubmeshSize': 1/10,'order': 1, 'N_antennas': 0, 'f0': 6e9, 'antenna_type': '6GHz measurement', 'antenna_radius': 0.18, 'object_geom': '6GHz measurement', 'defect_geom': '6GHz measurement cyl fill', 'domain_height': 1, 'domain_radius': 4.2} ## uses settings given before those specified here ## settings for the meshMaker
+    #recMesh = meshMaker.MeshInfo(comm, folder+runName+'mesh.msh', viewGMSH=False, reference = True, verbosity = verbosity, **rec_mesh_settings)
+    #postProcessing.solveFromQs(folder+runName+f'_angle{angles[0]}', plotSs=False, maxRefl=1, solutionName=f'_Sdutfrom{testrunName}_interpmesh', onlyAPriori=True, SparamName=f'{folder}{testrunName}_angle{angles[0]}', returnResults=[3], reconstructionMeshInfo=recMesh)
+    #postProcessing.solveFromQs(folder+runName+f'_angle{angles[0]}', extraProbs = [folder+runName+f'_angle{angle}' for angle in angles[1:]], extraSparamNames=[folder+testrunName+f'_angle{angle}' for angle in angles[1:]], solutionName=f'_Sdutfrom{testrunName}_interpmesh', onlyAPriori=True, SparamName=f'{folder}{testrunName}_angle{angles[0]}', returnResults=[3], reconstructionMeshInfo=recMesh, maxRefl=1)
+    
+    
+    #######
+    ### Measurement Stuff
+    #######
+    #measFolder = '/mnt/c/Users/al8032pa/Work Folders/Documents/antenna measurements/Microwave Imaging/Datasets/Attempt 1 (16-4-2026)/'
+    measFolder = '/mnt/c/Users/al8032pa/Work Folders/Documents/antenna measurements/Microwave Imaging/Datasets/Attempt 2 (4-5-2026)/'
+    
+    Sref = f'{measFolder}solidPOMblock'
+    Stest = f'{measFolder}solidPOMblock+hole_near_A2_filledwithPLA'
+    #Stest = f'{measFolder}solidPOMblock+hole_near_A2_filledwithPOM'
+    #Stest = f'{measFolder}solidPOMblock+hole_near_A2_filledwithPOM+PETGring'
+    #Stest = f'{measFolder}solidPOMblock+hole_near_A2'
+    
+    Ssangle = angles[0]
+    measfnames = [f'{measFolder}solidPOMblock/', f'{measFolder}emptySetup/', f'{measFolder}emptySetup+foam/']
+    #measfnames = [f'{measFolder}solidPOMblock/', f'{measFolder}solidPOMblock+hole_near_A1/', f'{measFolder}solidPOMblock+hole_near_A1_filledwithPLA/']
+    simfnames = [f'{folder}{runName}_angle{Ssangle:.1f}output.npz', f'{folder}measurements_corrected_smallmesh__angle{Ssangle:.1f}output.npz']
+    
+    ##diffs
+    measfnames = [f'{measFolder}solidPOMblock/', f'{measFolder}solidPOMblock+hole_near_A2_filledwithPOM']
+    simfnames = [f'{folder}{runName}_angle{Ssangle:.1f}output.npz', f'{folder}{runName}dut_POMfill__angle{Ssangle:.1f}output.npz']
+    
+    ## empty vs ref
+    measfnames = [f'{measFolder}emptysetup/', f'{measFolder}solidPOMblock/']
+    simfnames = [f'{folder}measurements_noobject_angle{Ssangle:.1f}output.npz', f'{folder}measurements_corrected_smallmesh__angle{Ssangle:.1f}output.npz', f'{folder}measurements_corrected__angle{Ssangle:.1f}output.npz']
+    #postProcessing.measCompareSs(simfnames, measfnames, diffs=False, angle=Ssangle)
+    
+    angles = [0.0, 40.0, 80.0, 120.0, 160.0, 200.0]#np.arange(0, 360, 80, dtype=float) ## try using only a few for analysis
+    frequenciesToUse=[]#[i for i in np.arange(20) if i%2==0]
+    #postProcessing.solveFromQs(folder+runName+f'_angle{angles[0]}', SparamMeas=[Sref, Stest, angles, freqs], includeRefl=True, extraProbs = [folder+runName+f'_angle{angle}' for angle in angles[1:]], solutionName='', onlyAPriori=True, frequenciesToUse=frequenciesToUse, returnResults=[3])
+    #postProcessing.solveFromQs(folder+runName+f'_angle{angles[0]}_regMesh', SparamMeas=[Sref, Stest, angles, freqs], extraProbs = [folder+runName+f'_angle{angle}' for angle in angles[1:]], solutionName='', onlyAPriori=False, frequenciesToUse=frequenciesToUse, returnResults=[3, 4])
+    
+    
+    #testPatchPattern(h=1/8, name=f'6GHzpatchPatternTest_ho{8:.1f}', degree=3, freqs = np.linspace(5e9, 7e9, 50), showPlots=False)
+    #testPatchPattern(h=1/6, name=f'6GHzpatchPatternTest_aftermeas_ho{6.0:.1f}', epsr_FR4=4.4*(1-.11/4.4j), degree=3, freqs = np.linspace(5.4e9, 6.6e9, 22), showPlots=False)
+    #testPatchPattern(h=1/6, name=f'6GHzpatchPatternTest_aftermeas_ho{6.0:.1f}_epsr4.3', epsr_FR4=4.3*(1-.11/4.4j), degree=3, freqs = np.linspace(5.4e9, 6.6e9, 22), showPlots=False)
+    #testPatchPattern(h=1/6, name=f'6GHzpatchPatternTest_aftermeas_ho{6.0:.1f}_epsr4.2', epsr_FR4=4.2*(1-.11/4.4j), degree=3, freqs = np.linspace(5.4e9, 6.6e9, 22), showPlots=False)
+    
+    #testPatchPattern(h=1/13, name=f'6GHzpatchPatternTest_deg1_ho{13.0:.1f}', epsr_FR4=4.3*(1-.11/4.4j), degree=1, freqs = np.linspace(5.4e9, 6.6e9, 22), showPlots=False)
+    #testPatchPattern(h=1/3.5, name=f'6GHzpatchPatternTest_order2mesh_ho{3.5:.1f}', epsr_FR4=4.3*(1-.11/4.4j), degree=3, freqs = np.linspace(5.4e9, 6.6e9, 22), showPlots=False)
+    #testPatchPattern(h=1/4.8, name=f'6GHzpatchPatternTest_ho{4.8:.1f}', epsr_FR4=4.3*(1-.11/4.4j), degree=3, freqs = np.linspace(5.4e9, 6.6e9, 22), showPlots=False)
+    
+    #testPatchPattern(h=1/3.5, name=f'10GHzpatchTest_ho{3.5:.1f}', degree=3, freqs = np.linspace(8e9, 12e9, 36), showPlots=False, viewGMSH=False, atype='patchtest')
+    #testPatchPattern(h=1/8.0, name=f'10GHzpatchTest_ho{8.0:.1f}', degree=3, freqs = np.linspace(8e9, 12e9, 36), showPlots=False, viewGMSH=False, atype='patchtest')
+    #patchSsPlot([f'10GHzpatchTest_ho{3.5:.1f}', f'10GHzpatchTest_ho{8.0:.1f}'], feko='TestStuff/FEKO patch S11 lambdaover50.dat')
+    
+    #testPatchPattern(h=1/8, name=f'6GHzpatchPatternTest_ho{8.0:.1f}', degree=3, freqs = np.linspace(5.4e9, 6.6e9, 22), showPlots=False, viewGMSH=False)
+    
+    #patchSsPlot([f'6GHzpatchPatternTest_largerdomain_ho{5.0:.1f}_epsr4.3', f'6GHzpatchPatternTest_ho{8.0:.1f}', f'6GHzpatchPatternTest_ho{4.8:.1f}', f'6GHzpatchPatternTest_order2mesh_ho{3.5:.1f}']) ## plot S11 comp. with Feko
+    
+    #testPatchPattern(h=1/3.5, name=f'6GHzpatchnewnew_ho{3.5:.1f}', degree=3, freqs = np.linspace(5.4e9, 6.6e9, 22), showPlots=False, viewGMSH=False)
+    #testPatchPattern(h=1/8, name=f'6GHzpatchnewnew_ho{8.0:.1f}', degree=3, freqs = np.linspace(5.4e9, 6.6e9, 22), showPlots=False, viewGMSH=False)
+    
+    #patchSsPlot([f'6GHzpatchnewnew_ho{3.5:.1f}', f'6GHzpatchnewnew_ho{8.0:.1f}']) ## plot S11 comp.
+    
+    #cablePortTest(h=1/3.5, epsr1=141.1*(1-1.2j), epsr2=81.1*(1-1.5j), d=3e-3, L=1e-3)
+    #cablePortRMSError(h=1/3.5, freqs=np.linspace(9e9, 11e9, 10))
+    #cablePortRMSError(h=1/8, freqs=np.linspace(9e9, 11e9, 10))
+    
+    
+    
+    #===========================================================================
+    # m2 = '/mnt/c/Users/al8032pa/Work Folders/Documents/antenna measurements/Microwave Imaging/Datasets/Attempt 2 (4-5-2026)/emptysetup+foam'
+    # m1 = '/mnt/c/Users/al8032pa/Work Folders/Documents/antenna measurements/Microwave Imaging/Datasets/Attempt 2 (4-5-2026)/emptysetup'
+    # 
+    # m2 = '/mnt/c/Users/al8032pa/Work Folders/Documents/antenna measurements/Microwave Imaging/Datasets/Attempt 2 (4-5-2026)/solidPOMblock'
+    # m1 = '/mnt/c/Users/al8032pa/Work Folders/Documents/antenna measurements/Microwave Imaging/Datasets/Attempt 2 (4-5-2026)/solidPOMblock+hole_near_A2_filledwithPOM+PETGring'
+    # 
+    # f1 = np.loadtxt(m1+'/angle0.00.csv', delimiter=',', skiprows=3, dtype=complex)
+    # f2 = np.loadtxt(m2+'/angle0.00.csv', delimiter=',', skiprows=3, dtype=complex)
+    # plt.plot(f1[:, 0], 20*np.log10(np.abs(np.abs(f1[:, 1]) - np.abs(f2[:, 1]))))
+    # plt.show()
+    #===========================================================================
+    
+    
+    if(comm.rank == model_rank):
+        print(f'runScatt3D complete in {timer()-t1:.2f} s ({(timer()-t1)/3600:.2f} hours), exiting...')
+        sys.stdout.flush()

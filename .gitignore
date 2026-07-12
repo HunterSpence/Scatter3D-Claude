@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.cache/
+data3D/
+diagnostics_out/
+e2e_work/
+*.npz
+*.msh
+*.xdmf
+*.h5
+*.bp/
+*.png
+!docs/*.png
+localCompTimesMems*
