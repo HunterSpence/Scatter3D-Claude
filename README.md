@@ -62,7 +62,7 @@ python3 Scatt3D/test_measurement_diagnostics.py   # diagnostics on synthetic gro
 prob = Scatt3DProblem(comm, mesh, ...)                                # direct, 3.3x faster than before
 prob = Scatt3DProblem(comm, mesh, solver_settings={'blr_tol': 1e-6}) # + MUMPS BLR compression
 prob = Scatt3DProblem(comm, mesh, solver_settings={'sweep_mode': True})  # anchor-LU + FGMRES sweep
-prob = Scatt3DProblem(comm, mesh, solver_settings={'symmetric': True})   # complex-symmetric LDL^T: ~0.55-0.6x LU memory (analysis-estimate metric); +OOC = 0.38x measured peak RAM
+prob = Scatt3DProblem(comm, mesh, solver_settings={'symmetric': True})   # complex-symmetric LDL^T: 0.528x stock LU measured (INFOG-22, 545k); 0.456-0.462x with +Scotch+BLR; +OOC = 0.38x measured peak RAM (single rank), 0.66-0.70x vs LU+OOC at 2.8M-3.23M dofs
 ```
 
 > `'symmetric'` needs a BLAS with a working GEMMT: OpenBLAS 0.3.26 (the default in
