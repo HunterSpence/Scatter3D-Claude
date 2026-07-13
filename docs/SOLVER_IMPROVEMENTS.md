@@ -284,13 +284,13 @@ Scotch config measured identically (5,755 MB) in two independent probe harnesses
 | config | INFOG(17) est | INFOG(22) measured | ratio vs stock LU |
 |---|---|---|---|
 | LU stock (defaults) | 12,889 | 10,898 | 1.000 |
-| LU + Scotch ordering | — | 10,543 | 0.967 (ordering barely helps LU) |
-| LDL^T default ordering | ~7,4xx | 5,957 | 0.547 |
+| LU + Scotch ordering | 12,464 | 10,543 | 0.967 (ordering barely helps LU) |
+| LDL^T default ordering | 7,049 | 5,957 | 0.547 |
 | LDL^T + PORD | 6,873 | 5,811 | 0.533 |
 | LDL^T + Scotch | 6,806 | 5,755 | 0.528 |
 | LDL^T + Scotch + relaxed pivoting + 2 IR steps | 6,806 | 5,755 | 0.528 (pivot relax adds nothing) |
-| LDL^T + ICNTL(12)=2/3 variants | — | 5,957 | 0.547 (null effect) |
-| LDL^T + BLR 1e-5 + ICNTL(38) (default ordering) | — | 5,078 | 0.466 |
+| LDL^T + ICNTL(12)=2/3 variants | 7,049 | 5,957 | 0.547 (null effect) |
+| LDL^T + BLR 1e-5 + ICNTL(38)=200 (default ordering) | 7,051 | 5,078 | 0.466 (diagnostic only: rel_err 9.6e-2 without IR) |
 | **LDL^T + Scotch + BLR 1e-6** | 6,808 | **5,039** | **0.462** |
 | **LDL^T + Scotch + BLR 1e-5** | 6,808 | **4,974** | **0.456** |
 
@@ -313,7 +313,7 @@ measured at 2.1e-10 vs LU at 2.8M dofs for blr 1e-6):
 | Scotch + blr 1e-6, no refinement | 5,039 | 0.462 | 8.6e-3 |
 | **Scotch + blr 1e-6 + ICNTL(10)=2 refinement** | **5,039** | **0.462** | **4.7e-6** |
 | Scotch + blr 1e-8 + ICNTL(10)=2 | 5,295 | 0.486 | 7.4e-5 (non-monotonic vs 1e-6 — noted, not chased) |
-| Scotch, no BLR (pristine reference) | 5,755 | 0.528 | 8.3e-11 |
+| Scotch, no BLR (pristine reference) | 5,755 | 0.528 | 1.0e-10 |
 
 Recommended shipping config:
 `solver_settings={'symmetric': True, 'mat_mumps_icntl_7': 3, 'blr_tol': 1e-6, 'mat_mumps_icntl_10': 2}`
