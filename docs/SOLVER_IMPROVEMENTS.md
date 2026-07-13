@@ -491,6 +491,13 @@ Recommended ladder now: fp32 stack (0.22–0.31, S at 2e-7) > fp64 stack with IC
 (0.22x mixed-mode vs in-core LU, machine-eps). Next tier (researched, not yet run):
 MUMPS 5.9 ICNTL(40) adaptive-precision BLR (stacks, OOC-compatible, needs 5.9 build);
 two-level p-coarse preconditioning (would also cut the RSS floor; a real solver project).
+A feasibility probe (2026-07-13, 545k coax matrix, geometric-order-1 mesh, deg-1 coarse
+space via `interpolation_matrix`, coarse LU + damped-Jacobi smoothing, full GMRES, judged
+on TRUE residual) measured the NAIVE version dead: additive and multiplicative two-level
+both stall at true relres 0.6-1.4 after 100-150 iterations — the textbook indefinite
+curl-curl failure (Ernst & Gander; Hiptmair & Xu). Any viable p-coarse route needs
+curl-aware smoothing (Hiptmair/hybrid) or a GenEO-class coarse space — that is where the
+weeks go, not in the two-level plumbing (probe harness: `bench/spike/`).
 
 **Combination `sweep_mode` × `pc_precision single` — measured once (2026-07-13):**
 545k-dof deg-3 coax, single rank, Nf=3 over 5.4–7.2 GHz: the fp32 anchor factorization
