@@ -63,11 +63,13 @@ prob = Scatt3DProblem(comm, mesh, ...)                                # direct, 
 prob = Scatt3DProblem(comm, mesh, solver_settings={'blr_tol': 1e-6}) # + MUMPS BLR compression
 prob = Scatt3DProblem(comm, mesh, solver_settings={'sweep_mode': True})  # anchor-LU + FGMRES sweep
 prob = Scatt3DProblem(comm, mesh, solver_settings={'symmetric': True})   # complex-symmetric LDL^T: 0.528x stock LU measured (INFOG-22, 545k); 0.411x with +Scotch+BLR+ICNTL(37); +OOC = 0.38x measured peak RAM (single rank)
-# maximum savings — fp32 factor + fp64 FGMRES (PETSc >= 3.25; needs both GEMMT shims): 0.220x (545k) / 0.309x (2.8M) measured, S-params 2e-7-class vs LU
+# maximum savings — fp32 factor + fp64 FGMRES (PETSc >= 3.25; needs both GEMMT shims): 0.220x (545k) / 0.308x (2.8M) measured, S-params 2e-7-class vs LU
 prob = Scatt3DProblem(comm, mesh, solver_settings={'symmetric': True, 'mat_mumps_icntl_7': 3, 'blr_tol': 1e-6, 'mat_mumps_icntl_37': 1, 'pc_precision': 'single', 'ksp_type': 'fgmres', 'ksp_rtol': 1e-12, 'ksp_max_it': 100})
 ```
 
-> `'symmetric'` needs a BLAS with a working GEMMT: OpenBLAS 0.3.26 (the default in
+> `'symmetric'` needs a BLAS with a working GEMMT (and the fp32 path additionally
+> needs the single-complex sibling `bench/cgemmt_fix.f90` — both shims are baked into
+> `bench/Dockerfile.bench`): OpenBLAS 0.3.26 (the default in
 > `dolfinx/dolfinx:stable`) segfaults inside `zgemmt_` under ZMUMPS 5.8.2 — use the
 > LD_PRELOAD shim in `bench/zgemmt_fix.f90` (already baked into `bench/Dockerfile.bench`).
 > Details + measured memory ladder: `docs/SOLVER_IMPROVEMENTS.md`.

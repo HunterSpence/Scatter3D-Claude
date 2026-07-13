@@ -2,6 +2,11 @@
 # Mixed-precision factorization probe: fp64 outer FGMRES + single-precision (CMUMPS)
 # LDLT factor via PETSc 3.25 -pc_precision single, vs same-build fp64 baseline.
 # Usage: python3 mpprobe.py <fp64|fp32> [icntl_7=3] [cntl_7=1e-6] [icntl_37=1] ...
+#
+# Input matrix /work/bench/cableport/A545k.bin (545k-dof deg-3 coax system) is
+# regenerated with (inside the bench container, ~4 min on 16 cores):
+#   mkdir -p bench/cableport && cd bench/cableport
+#   PETSC_OPTIONS="-theScatteringProblem_ksp_view_mat binary:/work/bench/cableport/A545k.bin" #     SCATT3D_SRC=/work/Scatt3D python3 -u /work/bench/cableport_validate.py #     3 "{}" dump 0.2857142857142857 3 1
 import sys
 import resource
 import petsc4py
@@ -89,7 +94,10 @@ try:
     maxrss_gb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024.0 ** 2)
     print(f"RSS maxrss={maxrss_gb:.4f} GB")
     print(f"rel_err={rel_err:.6e} rel_res={rel_res:.6e}")
-    print("CASE_OK")
+    if reason > 0 and np.isfinite(rel_err) and np.isfinite(rel_res):
+        print("CASE_OK")
+    else:
+        print(f"CASE_FAIL converged_reason={reason} (non-converged or non-finite result)")
 
 except Exception as e:
     print(f"CASE_FAIL {e}")

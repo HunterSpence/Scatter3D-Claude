@@ -274,6 +274,8 @@ Measured on the 545k-dof deg-3 coax case (single rank, LU baseline 15,892 MB / p
 | sym + blr 1e-4 | 8,702 MB — unchanged | — | **BROKEN: 11% mag err, |S11|>1** | 136 s |
 | **sym + OOC (icntl_22=1)** | 8,700 MB (reported, factors on disk) | **3.31 GB = 0.38x LU** | 3.11e-4 — identical digits to LU | 477 s (still < LU) |
 
+(The later 1,341 MB OOC working-set figure in the follow-up probes uses Scotch ordering — a different config as well as the corrected metric; the two OOC numbers are not directly comparable.)
+
 - By the INFOG(16/17) estimate metric BLR shows no reduction at any tolerance, and
   above ~1e-5 it fails nonlinearly (11% S-parameter error at blr 1e-4 — ~8 orders
   beyond its nominal tolerance; complex-symmetric indefinite pivoting + compression
@@ -353,7 +355,7 @@ LDL^T in-core, LDL^T + OOC, and LU + OOC. In-core LU does not fit this box at ei
 size (the ladder's OOM boundary), so **LU + OOC is the measured LU denominator at
 scale**, and same-mode (OOC vs OOC) ratios are the apples-to-apples comparison.
 Every value below is from the run's own MUMPS INFOG output and OS accounting
-(`bench/box-evidence-2026-07-13/certify.log`).
+(evidence log `certify.log`, archived offline with the box-evidence bundle — available on request).
 
 | dofs | config | INFOG(17) est total | INFOG(22) measured total | INFOG(21) measured max/proc | RSS sum / max-proc | solve |
 |---|---|---|---|---|---|---|
@@ -420,13 +422,13 @@ signal in transmission rows; TSVD projection: measured-b energy in the top-10%
 singular subspace 14.2% vs simulated 31.5% (the model/data-mismatch signature).
 These verdicts characterize the synthetic set and certify the tooling end-to-end; the
 same diagnostics are the recommended first pass on real VNA data
-(`bench/box-evidence-2026-07-13/scatt3d-qs-diag.log`, plots in `diag_out/`).
+(evidence `scatt3d-qs-diag.log` + `diag_out/` plots, archived offline — available on request).
 
 ### Below-0.5 sprint — mixed precision lands 0.22–0.31 measured (2026-07-13, second box)
 
 A follow-up sprint (4 research agents + 2 external reviews + measured probes) pushed
 past the 0.462/0.411 in-core results. All numbers measured INFOG(21/22) unless labeled;
-second CPX51 box, evidence in `bench/box-evidence-2026-07-13/{scatt3d-cb37-cert.log, certify2/}`.
+second CPX51 box, evidence archived offline (`scatt3d-cb37-cert.log`, `certify2/` S-matrices) — available on request.
 
 **545k-dof matrix, single rank (stock LU measured: 10,898 MB):**
 
@@ -445,14 +447,14 @@ denominator was obtained swap-assisted: 7.7 GB NVMe swap peak, solve still 120 s
 |---|---|---|---|---|
 | in-core LU (defaults) | 24,646 (est 34,542) | 1.000 | — | 119.9 s |
 | fp64 LDL^T + Scotch + BLR + CB37 (+ICNTL 13) | 13,018 | 0.528 | 1.4e-9 | 70.7 s |
-| **fp32 factor + full stack + fp64 FGMRES** | **7,603** | **0.309** | 2.2e-7 | 217.4 s |
+| **fp32 factor + full stack + fp64 FGMRES** | **7,603** | **0.308** | 2.2e-7 | 217.4 s |
 
 Aggregate RSS (sum over 8 ranks): LU 32.58 GB → fp32 stack 19.31 GB (0.593; the
 dolfinx/PETSc per-rank overhead floor dominates this axis). The fp32 S-parameter
 agreement (2.2e-7) is set by the outer FGMRES rtol (1e-12 here) — tunable; it sits
 ~an order below the reciprocity error floor of real measured data (1.7e-6, see
-diagnostics above). Solve-time cost of fp32 is ~2.4x the fp64 stack — the standard
-memory/time trade, now quantified.
+diagnostics above). Solve-time cost of fp32 is ~3.1x the fp64 stack in the same table (217.4 s vs
+70.7 s) — the standard memory/time trade, now quantified.
 
 **Negative results from the same sprint (measured, kept to prevent re-chasing):**
 - ICNTL(13) root-treatment: ±2–5%, direction inconsistent across sizes — noise, not a lever
@@ -478,7 +480,7 @@ no rebuild needed), plus both GEMMT shims. Drop-in:
 solver_settings={'symmetric': True, 'mat_mumps_icntl_7': 3, 'blr_tol': 1e-6,
                  'mat_mumps_icntl_37': 1, 'pc_precision': 'single',
                  'ksp_type': 'fgmres', 'ksp_rtol': 1e-12, 'ksp_max_it': 100}
-# 0.220x (545k) / 0.309x (2.8M) of measured stock-LU memory; S-params 2e-7-class vs LU
+# 0.220x (545k) / 0.308x (2.8M) of measured stock-LU memory; S-params 2e-7-class vs LU
 ```
 
 Recommended ladder now: fp32 stack (0.22–0.31, S at 2e-7) > fp64 stack with ICNTL(37)
@@ -493,7 +495,7 @@ logic is plausible but unverified. Use the two features separately until tested.
 
 ### Floor-mapping addendum — where "lower" actually ends (2026-07-13 evening)
 
-Systematic push below 0.220, all measured (evidence: `bench/box-evidence-2026-07-13/`):
+Systematic push below 0.220, all measured (evidence archived offline — available on request):
 
 **BLR tolerance sweep on the fp32 stack (545k, single rank, fp64 FGMRES rtol 1e-12):**
 
@@ -509,18 +511,22 @@ Systematic push below 0.220, all measured (evidence: `bench/box-evidence-2026-07
 At 2.8M (8 ranks): blr 1e-5 fp32 measures 7,370 MB (**0.299** vs measured in-core LU) with the
 same 2.2e-7-class S-agreement, but solve time rises 38% (299 s vs 217 s) and iteration counts
 grow several-fold — the convergence margin erodes with problem size at fixed tolerance.
-**Recommendation stands at blr 1e-6 (0.220 / 0.309); the 0.204 / 0.299 edge exists and is
+**Recommendation stands at blr 1e-6 (0.220 / 0.308); the 0.204 / 0.299 edge exists and is
 documented, priced in convergence margin.**
 
 **MUMPS-side "go lower" features — both dead ends, verified not assumed:**
 - **ICNTL(40)** (MUMPS 5.9 adaptive-precision BLR storage): PETSc's MUMPS wrapper
   whitelist-rejects it ("Unsupported ICNTL value 40" — a discrete list in `imumps.c`,
-  independent of linked MUMPS version). We patched the whitelist, built PETSc 3.25.1
-  from source against MUMPS 5.9.0, traced the flag into MUMPS's own `KEEP(450)`-gated
-  LDLT branches to confirm it was live — and measured **bit-identical INFOG(21/22)**
-  with and without, on both the fp64 (4,558) and fp32 (2,463) stacks. Real feature,
-  zero effect on this operator (likely an unmet internal prerequisite or front-shape
-  threshold; open question, not worth further chase).
+  independent of linked MUMPS version). We patched the whitelist and built PETSc
+  3.25.1 from source against MUMPS 5.9.0; the probe runs then measured bit-identical
+  INFOG(21/22) with and without the flag — **but this test is INCONCLUSIVE, not a
+  verified null**: the probe logs contain PETSc's `Option left: -op_mat_mumps_icntl_40`
+  unused-option warning on exactly the ICNTL(40) runs, i.e. the option string was
+  likely never consumed on the measurement path despite the whitelist patch. A valid
+  retest must set the flag through the direct API (`F.setMumpsIcntl(40,1)` between
+  symbolic and numeric phases) and confirm consumption before drawing any conclusion.
+  Until then: unreachable on stock PETSc, unproven on patched PETSc — either way, not
+  a path available on the standard stack today.
 - **ICNTL(47)** (single-in-double factorization): compiled out of MUMPS itself unless
   built with `-DSINGLEINDOUBLE` + dual C/Z libraries — and functionally redundant with
   the `-pc_precision single` path this branch already ships.
