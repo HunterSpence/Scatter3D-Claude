@@ -274,6 +274,39 @@ Measured on the 545k-dof deg-3 coax case (single rank, LU baseline 15,892 MB / p
   and below ~1e-5 it fails nonlinearly (11% S-parameter error at 1e-4 — ~8 orders beyond
   its nominal tolerance; complex-symmetric indefinite pivoting + compression interact
   badly). Recommendation: do not use blr_tol with 'symmetric' on this problem class.
+### MEASURED effective-memory results — the target is MET in-core (2026-07-12, pause-point)
+
+545k-dof deg-3 coax matrix, single rank, MUMPS INFOG(22) = memory effectively used
+during factorization (the measured metric). Stock LU reference (default options,
+icntl_14=20): estimate 12,889 MB, **measured 10,898 MB**. Cross-validated: the plain
+Scotch config measured identically (5,755 MB) in two independent probe harnesses.
+
+| config | INFOG(17) est | INFOG(22) measured | ratio vs stock LU |
+|---|---|---|---|
+| LU stock (defaults) | 12,889 | 10,898 | 1.000 |
+| LU + Scotch ordering | — | 10,543 | 0.967 (ordering barely helps LU) |
+| LDL^T default ordering | ~7,4xx | 5,957 | 0.547 |
+| LDL^T + PORD | 6,873 | 5,811 | 0.533 |
+| LDL^T + Scotch | 6,806 | 5,755 | 0.528 |
+| LDL^T + Scotch + relaxed pivoting + 2 IR steps | 6,806 | 5,755 | 0.528 (pivot relax adds nothing) |
+| LDL^T + ICNTL(12)=2/3 variants | — | 5,957 | 0.547 (null effect) |
+| LDL^T + BLR 1e-5 + ICNTL(38) (default ordering) | — | 5,078 | 0.466 |
+| **LDL^T + Scotch + BLR 1e-6** | 6,808 | **5,039** | **0.462** |
+| **LDL^T + Scotch + BLR 1e-5** | 6,808 | **4,974** | **0.456** |
+
+**The earlier "BLR gives no memory win" finding was a metric artifact, exactly as
+suspected in review: BLR compression is invisible to the INFOG(16/17) analysis
+estimates (computed full-rank, before BLR runs) but real in the measured INFOG(22) —
+a further ~12–14% under the Scotch ordering.** Combined config
+`solver_settings={'symmetric': True, 'mat_mumps_icntl_7': 3, 'blr_tol': 1e-6}`:
+**0.462x of stock LU's measured factorization memory, in-core.** Accuracy at blr 1e-6
+previously measured at 2.1e-10 max |dS| vs LU at 2.8M dofs (deg-3); a dedicated
+accuracy confirmation of the exact winning config is running at pause time. Note:
+INFOG(29) (effective factor entries) reads full-rank in this MUMPS version even with
+BLR active — the compression shows in INFOG(22)/(21), not INFOG(29).
+At-scale certification (2.8M/3.23M dofs, 8 ranks, in-core + OOC + LU-OOC, with
+aggregate RSS) is queued on the benchmark box; its tables append here when complete.
+
 - Out-of-core LDL^T is a co-equal PRIMARY result, not a fallback — the strongest measured number against the strict 0.5 line: 0.38x LU peak RAM,
   bit-for-bit LU-class accuracy, and still faster than the stock solver. Enable with
   solver_settings={'symmetric': True, 'mat_mumps_icntl_22': 1}.
