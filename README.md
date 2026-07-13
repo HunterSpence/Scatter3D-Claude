@@ -44,7 +44,7 @@ deserved to be. Every claim below is backed by a runnable artifact in this repo.
 Everything runs in the standard dolfinx container plus a thin dependency layer:
 
 ```bash
-docker build -f bench/Dockerfile.bench -t scatt3d .
+docker build -f bench/Dockerfile.bench -t scatt3d bench/
 docker run --rm -v $(pwd):/work -w /work/Scatt3D scatt3d bash -c \
   'source /usr/local/bin/dolfinx-complex-mode && python3 testExample.py'
 ```

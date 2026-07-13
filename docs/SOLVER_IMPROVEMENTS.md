@@ -1,4 +1,4 @@
-# Scatt3D solver improvements (branch `perf/solver-and-measurement-fixes`)
+# Scatt3D solver improvements
 
 Base: `Wojoxiw/Scatt3D` upstream master (`243c367`). Changes are surgical — the physics
 (weak form, PML, port model, S-parameter extraction) is untouched and verified unchanged
@@ -109,8 +109,7 @@ DOF, many MPI ranks — i.e. the actual production runs on the cluster). Treat
 `blr_tol` as a knob to benchmark at production scale, not a guaranteed win; accuracy
 impact is demonstrably tiny and tunable.
 
-Reproduce: `bench/run_headtohead.sh` / `bench/run_final_cases.sh` in the audit
-workspace, or call `Scatt3DProblem(..., solver_settings={...})` — the settings dict
+Reproduce: `bench/run_headtohead.sh` / `bench/run_final_cases.sh` (in `bench/`), or call `Scatt3DProblem(..., solver_settings={...})` — the settings dict
 is already plumbed through the constructor upstream.
 
 ## Verification summary (what was actually proven)

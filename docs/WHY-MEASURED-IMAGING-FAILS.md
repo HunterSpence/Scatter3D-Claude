@@ -8,7 +8,7 @@
 
 Simulated data reconstructs a clean defect image; real measured data reconstructs pure noise, even restricted to well-matched frequencies, transmission-only, or reflection-only subsets. Failing everywhere uniformly is the signature of a **systematic model/calibration mismatch**, not insufficient SNR. Three actions this week:
 
-1. **Confirm the b-vector reciprocity bug is gone and re-run.** `postProcessing.py:791` differenced `S_dut[m,n]` against the *transposed* `S_ref[n,m]` — invisible with numerically-reciprocal simulated data, but it injects raw VNA forward/reverse asymmetry into every transmission row of real data. Already fixed on `perf/solver-and-measurement-fixes` — use that branch as your new baseline, not `master`.
+1. **Confirm the b-vector reciprocity bug is gone and re-run.** `postProcessing.py:791` differenced `S_dut[m,n]` against the *transposed* `S_ref[n,m]` — invisible with numerically-reciprocal simulated data, but it injects raw VNA forward/reverse asymmetry into every transmission row of real data. Already fixed in this repository — use it as your new baseline, not upstream `master`.
 2. **Run `Scatt3D/measurement_diagnostics.py`** (new on the same branch): reciprocity floor vs. ΔS signal, old-bug impact quantifier, and a TSVD range-space projection test that tells you whether the surviving noise is model-mismatch (fixable) or SNR (needs more contrast/less drift).
 3. **Plot calibrated-measured vs. simulated S-parameters** for the reference object — magnitude AND phase, all 16 channels, vs. frequency and rotation angle. The single most informative diagnostic here, and cheap.
 
@@ -28,7 +28,7 @@ Ranked by **(probability of being a real cause) × (cost to check)**. Tier 1 = h
 
 **Why:** FEM-simulated S is reciprocal to machine precision, so the swap is a no-op in simulation — exactly why "fully simulated → clean image." Real VNA S is only approximately reciprocal (switch asymmetry, cable flex, drift between forward/reverse sweeps), so every transmission row differences the DUT's forward path against the reference's *reverse* path — discarding the common-mode cancellation ΔS depends on and replacing it with raw hardware asymmetry. Explains why transmission-only still failed. A no-op for reflection rows (m==n) — consistent with, not contradicted by, reflection-only also failing.
 
-**Check/fix:** Already fixed on `HunterSpence/Scatt3D`, branch `perf/solver-and-measurement-fixes`. Confirm the fix and re-run real-data reconstruction from that branch; expect transmission-channel noise to drop noticeably if this was a major contributor.
+**Check/fix:** Already fixed in this repository (`HunterSpence/Scatter3D-Claude`, `main`). Confirm the fix and re-run real-data reconstruction from it; expect transmission-channel noise to drop noticeably if this was a major contributor.
 
 **Source:** First-hand audit, `postProcessing.py:791` vs. `scatteringProblem.py:1135/1145` (CONFIRMED).
 
@@ -40,7 +40,7 @@ Ranked by **(probability of being a real cause) × (cost to check)**. Tier 1 = h
 
 **Check/fix:** Run against existing collected data before writing anything new. If measured-data energy ≈ noise-only energy, stop tuning regularization and go straight to Tiers 2–5.
 
-**Source:** Tool on `perf/solver-and-measurement-fixes` (first-hand); Hansen, P.C., *Rank-Deficient and Discrete Ill-Posed Problems*, SIAM 1998 (CONFIRMED — Picard condition/TSVD filter factors).
+**Source:** Tool in this repository (first-hand); Hansen, P.C., *Rank-Deficient and Discrete Ill-Posed Problems*, SIAM 1998 (CONFIRMED — Picard condition/TSVD filter factors).
 
 ### 1.3 Overlay calibrated-measured vs. simulated S-parameters — the single most informative plot
 
@@ -278,7 +278,7 @@ Ranked by **(probability of being a real cause) × (cost to check)**. Tier 1 = h
 
 | Landmine | Location | Status |
 |---|---|---|
-| **b-vector transposed reference indices** — `S_dut[m,n] − S_ref[n,m]` | `postProcessing.py:791` | **Fixed** on `perf/solver-and-measurement-fixes`; top root-cause candidate (1.1). |
+| **b-vector transposed reference indices** — `S_dut[m,n] − S_ref[n,m]` | `postProcessing.py:791` | **Fixed** in this repository; top root-cause candidate (1.1). |
 | **`SparamMeas` ordering landmine** — docstring says freqs-then-angles; working code needs angles-then-freqs | `postProcessing.py:614-618` | Documentation trap, not a runtime bug per se. |
 | **DUT calibration chaining** — reference phase-corrected against FEM sim; DUT then phase-corrected against the *already-corrected measured* reference, not the original sim | `postProcessing.py:617-618` | Compounds residual error into the second correction. Decouple regardless of calibration scheme used. |
 | **Nearest-neighbor frequency snap**, no interpolation, warns only above 1 Hz mismatch | `postProcessing.py:538-544` | Low risk if grids align as designed — confirm they do. |
@@ -301,4 +301,4 @@ Ranked by **(probability of being a real cause) × (cost to check)**. Tier 1 = h
 
 **Inversion math:** Hansen, *Rank-Deficient and Discrete Ill-Posed Problems*, SIAM 1998; Hansen & O'Leary, SIAM J. Sci. Comput. 14(6), 1993; Colton, Kress, *Inverse Acoustic and Electromagnetic Scattering Theory*, Springer; Wirgin, arXiv:math-ph/0401050 (2004); Kaipio, Somersalo, *Statistical and Computational Inverse Problems*, Springer 2005; Aster, Borchers, Thurber, *Parameter Estimation and Inverse Problems*, Elsevier.
 
-**First-hand code audit (this repo):** `Wojoxiw/Scatt3D`: `postProcessing.py` (lines 79-148, 519-618, 731-794, 1040-1276), `scatteringProblem.py` (lines 628-639, 949-993, 1042-1150), `meshMaker.py` (lines 159-182, 587-673), `runScatt3D.py` (`testRunDifferentDUTAntennas`, `forPaper` sweep) — audited against upstream `master`; branch `perf/solver-and-measurement-fixes` (b-vector fix, `measurement_diagnostics.py`, MUMPS BLR/anchor-LU+FGMRES solver work).
+**First-hand code audit (this repo):** `Wojoxiw/Scatt3D`: `postProcessing.py` (lines 79-148, 519-618, 731-794, 1040-1276), `scatteringProblem.py` (lines 628-639, 949-993, 1042-1150), `meshMaker.py` (lines 159-182, 587-673), `runScatt3D.py` (`testRunDifferentDUTAntennas`, `forPaper` sweep) — audited against upstream `master`; fixes in this repository (b-vector fix, `measurement_diagnostics.py`, MUMPS BLR/anchor-LU+FGMRES solver work).

@@ -5,7 +5,7 @@
 #   - records MUMPS factor memory (INFOG 16/17) so LU vs LDLT memory shows up at toy scale
 #   - machine-readable JSON line output; aggregation + PASS/FAIL verdict in run_cableport.sh
 # Usage (in container, complex mode):
-#   SCATT3D_SRC=/work/hunter-Scatt3D/Scatt3D python3 cableport_validate.py <coax_idx> '<solver_json>' [tag] [h] [degree] [nf]
+#   SCATT3D_SRC=/work/Scatt3D python3 cableport_validate.py <coax_idx> '<solver_json>' [tag] [h] [degree] [nf]
 import os
 os.environ["OMP_NUM_THREADS"] = "1"
 import matplotlib
@@ -18,7 +18,7 @@ from scipy.constants import c as c0, mu_0 as mu0, epsilon_0 as eps0, pi
 from timeit import default_timer as timer
 import resource
 
-sys.path.insert(0, os.environ.get("SCATT3D_SRC", "/work/hunter-Scatt3D/Scatt3D"))
+sys.path.insert(0, os.environ.get("SCATT3D_SRC", "/work/Scatt3D"))
 import meshMaker
 import scatteringProblem
 

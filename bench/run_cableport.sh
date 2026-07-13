@@ -1,8 +1,9 @@
 #!/bin/bash
 # Cable-port validation driver: coaxs x solver-configs, each case in its own process,
 # then aggregate + PASS/FAIL verdict. Run inside the bench container (complex mode):
-#   docker run -d -v <tree>:/work -w /work/bench/cableport scatt3d-bench bash /work/bench/run_cableport.sh
-# Env overrides: CP_COAXS="0 3 5" CP_CONFIGS='lu={} sym={"symmetric": true}' CP_H CP_DEG CP_NF
+#   docker run --rm -v $(pwd):/work -w /work/bench scatt3d-bench bash run_cableport.sh
+# Env overrides: CP_COAXS="0 3 5" CP_H CP_DEG CP_NF; add one extra solver config via
+#   CP_EXTRA_NAME=<tag> CP_EXTRA_JSON='{"symmetric": true, ...}' (runs alongside lu + sym)
 set -u
 source /usr/local/bin/dolfinx-complex-mode
 export PYTHONUNBUFFERED=1
