@@ -300,6 +300,7 @@ Scotch config measured identically (5,755 MB) in two independent probe harnesses
 | LDL^T + BLR 1e-5 + ICNTL(38)=200 (default ordering) | 7,051 | 5,078 | 0.466 (diagnostic only: rel_err 9.6e-2 without IR) |
 | **LDL^T + Scotch + BLR 1e-6** | 6,808 | **5,039** | **0.462** |
 | **LDL^T + Scotch + BLR 1e-5** | 6,808 | **4,974** | **0.456** |
+| **LDL^T + Scotch + BLR 1e-6 + ICNTL(37) CB compression** | 6,808 | **4,476** | **0.411** |
 
 **The earlier "BLR gives no memory win" finding was a metric artifact, exactly as
 suspected in review: BLR compression is invisible to the INFOG(16/17) analysis
@@ -321,6 +322,20 @@ measured at 2.1e-10 vs LU at 2.8M dofs for blr 1e-6):
 | **Scotch + blr 1e-6 + ICNTL(10)=2 refinement** | **5,039** | **0.462** | **4.7e-6** |
 | Scotch + blr 1e-8 + ICNTL(10)=2 | 5,295 | 0.486 | 7.4e-5 (non-monotonic vs 1e-6 — noted, not chased) |
 | Scotch, no BLR (pristine reference) | 5,755 | 0.528 | 1.0e-10 |
+| **Scotch + blr 1e-6 + IR + ICNTL(37)=1 (CB compression)** | **4,476** | **0.411** | **6.1e-6** |
+| Scotch + blr 1e-6 + IR + ICNTL(36)=1 (UCFS) | 5,039 | 0.462 | 4.7e-6 (no memory effect) |
+| Scotch + blr 5e-7 / 2e-7 + IR | 5,069 / 5,114 | 0.465 / 0.469 | 4.1e-5 / 6.0e-6 (1e-6 is the local optimum) |
+| Scotch + blr 1e-5 + IR + ICNTL(37)=1 | 4,262 | 0.391 | 2.6e-2 — REJECTED (accuracy broken even with IR) |
+| ICNTL(37)=1 without BLR | 5,755 | 0.528 | 1.0e-10 (CB compression inert unless ICNTL(35) active) |
+
+Follow-up probes (2026-07-13, same 545k matrix and harness): **ICNTL(37) contribution-block
+compression stacks on BLR for a further ~11% measured saving — new best in-core 0.411 —**
+while leaving forward error in the same class (6.1e-6 vs 4.7e-6). Two negative results
+worth keeping: UCFS (ICNTL 36) had no memory effect here, and in OOC mode compression
+HURTS the in-RAM working set (sym+OOC plain: 1,341 MB measured working set, rel_err
+1.0e-10; sym+OOC+BLR+CB37: 3,069 MB) — keep OOC plain. At-scale certification of the
+0.411 config (2.8M/3.23M, 8 ranks, with ICNTL(13) root-treatment A/B and OS-level
+cgroup peak-RAM capture) is running; tables append here when complete.
 
 Recommended shipping config:
 `solver_settings={'symmetric': True, 'mat_mumps_icntl_7': 3, 'blr_tol': 1e-6, 'mat_mumps_icntl_10': 2}`
