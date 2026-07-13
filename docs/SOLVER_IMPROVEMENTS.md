@@ -492,9 +492,12 @@ Recommended ladder now: fp32 stack (0.22–0.31, S at 2e-7) > fp64 stack with IC
 MUMPS 5.9 ICNTL(40) adaptive-precision BLR (stacks, OOC-compatible, needs 5.9 build);
 two-level p-coarse preconditioning (would also cut the RSS floor; a real solver project).
 
-**Untested combination (do not assume):** `sweep_mode` together with `pc_precision
-single` has not been measured — the anchor factor in fp32 under sweep re-anchoring
-logic is plausible but unverified. Use the two features separately until tested.
+**Combination `sweep_mode` × `pc_precision single` — measured once (2026-07-13):**
+545k-dof deg-3 coax, single rank, Nf=3 over 5.4–7.2 GHz: the fp32 anchor factorization
+served all frequencies with zero re-anchors; max |ΔS| vs same-run LU 8.3e-13; factor
+memory INFOG(22) 2,400 MB = 0.220× the measured LU (10,912 MB) — identical memory to the
+fp32 stack alone, with sweep amortizing the single factorization. Multi-rank and
+multi-million-DOF behavior of the pair remains unmeasured.
 
 ### Floor-mapping addendum — where "lower" actually ends (2026-07-13 evening)
 
