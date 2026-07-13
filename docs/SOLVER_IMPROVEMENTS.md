@@ -490,3 +490,43 @@ two-level p-coarse preconditioning (would also cut the RSS floor; a real solver 
 **Untested combination (do not assume):** `sweep_mode` together with `pc_precision
 single` has not been measured — the anchor factor in fp32 under sweep re-anchoring
 logic is plausible but unverified. Use the two features separately until tested.
+
+### Floor-mapping addendum — where "lower" actually ends (2026-07-13 evening)
+
+Systematic push below 0.220, all measured (evidence: `bench/box-evidence-2026-07-13/`):
+
+**BLR tolerance sweep on the fp32 stack (545k, single rank, fp64 FGMRES rtol 1e-12):**
+
+| blr_tol | INFOG(22) | ratio | FGMRES its | verdict |
+|---|---|---|---|---|
+| 1e-6 (recommended) | 2,393 | 0.220 | 5 | comfortable margin |
+| 3e-6 | 2,301 | 0.211 | 6 | fine |
+| **1e-5 (edge)** | **2,225** | **0.204** | 11 | valid, thinner margin |
+| 3e-5 | 2,170 | 0.199 | 100, DIVERGED | rejected |
+| 1e-4 | 2,195 | 0.201 | 100, DIVERGED | rejected |
+| 1e-6 + ICNTL(23)=1800 cap | — | — | factorization error −11 | ~2.2 GB is a hard floor for this stack |
+
+At 2.8M (8 ranks): blr 1e-5 fp32 measures 7,370 MB (**0.299** vs measured in-core LU) with the
+same 2.2e-7-class S-agreement, but solve time rises 38% (299 s vs 217 s) and iteration counts
+grow several-fold — the convergence margin erodes with problem size at fixed tolerance.
+**Recommendation stands at blr 1e-6 (0.220 / 0.309); the 0.204 / 0.299 edge exists and is
+documented, priced in convergence margin.**
+
+**MUMPS-side "go lower" features — both dead ends, verified not assumed:**
+- **ICNTL(40)** (MUMPS 5.9 adaptive-precision BLR storage): PETSc's MUMPS wrapper
+  whitelist-rejects it ("Unsupported ICNTL value 40" — a discrete list in `imumps.c`,
+  independent of linked MUMPS version). We patched the whitelist, built PETSc 3.25.1
+  from source against MUMPS 5.9.0, traced the flag into MUMPS's own `KEEP(450)`-gated
+  LDLT branches to confirm it was live — and measured **bit-identical INFOG(21/22)**
+  with and without, on both the fp64 (4,558) and fp32 (2,463) stacks. Real feature,
+  zero effect on this operator (likely an unmet internal prerequisite or front-shape
+  threshold; open question, not worth further chase).
+- **ICNTL(47)** (single-in-double factorization): compiled out of MUMPS itself unless
+  built with `-DSINGLEINDOUBLE` + dual C/Z libraries — and functionally redundant with
+  the `-pc_precision single` path this branch already ships.
+
+**Measured floor summary: 0.204 (545k) / 0.299 (2.8M) is where configuration-level
+changes end on this stack.** Below that requires solver-architecture work (two-level
+p-coarse preconditioning with matrix-free operators — the only route that also attacks
+the FEM-overhead RSS floor; or exact static condensation) — both scoped in the sections
+above as multi-week projects.
