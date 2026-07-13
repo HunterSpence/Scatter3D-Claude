@@ -9,4 +9,8 @@ RUN pip install --no-cache-dir --break-system-packages --no-deps git+https://git
 # ZGEMM-based implementation (unit-tested in test_zgemmt.py).
 COPY zgemmt_fix.f90 /usr/local/src/zgemmt_fix.f90
 RUN gfortran -shared -fPIC -O2 /usr/local/src/zgemmt_fix.f90 -o /usr/local/lib/libzgemmt_fix.so -lblas
-ENV LD_PRELOAD=/usr/local/lib/libzgemmt_fix.so
+# cgemmt_ (single-complex GEMMT) is broken the same way — hit via the mixed-precision
+# path (-pc_precision single -> CMUMPS). Preload both shims.
+COPY cgemmt_fix.f90 /usr/local/src/cgemmt_fix.f90
+RUN gfortran -shared -fPIC -O2 /usr/local/src/cgemmt_fix.f90 -o /usr/local/lib/libcgemmt_fix.so -lblas
+ENV LD_PRELOAD=/usr/local/lib/libzgemmt_fix.so:/usr/local/lib/libcgemmt_fix.so

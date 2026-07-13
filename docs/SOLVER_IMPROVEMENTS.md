@@ -486,3 +486,7 @@ Recommended ladder now: fp32 stack (0.22–0.31, S at 2e-7) > fp64 stack with IC
 (0.22x mixed-mode vs in-core LU, machine-eps). Next tier (researched, not yet run):
 MUMPS 5.9 ICNTL(40) adaptive-precision BLR (stacks, OOC-compatible, needs 5.9 build);
 two-level p-coarse preconditioning (would also cut the RSS floor; a real solver project).
+
+**Untested combination (do not assume):** `sweep_mode` together with `pc_precision
+single` has not been measured — the anchor factor in fp32 under sweep re-anchoring
+logic is plausible but unverified. Use the two features separately until tested.
