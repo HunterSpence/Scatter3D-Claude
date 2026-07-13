@@ -304,6 +304,22 @@ previously measured at 2.1e-10 max |dS| vs LU at 2.8M dofs (deg-3); a dedicated
 accuracy confirmation of the exact winning config is running at pause time. Note:
 INFOG(29) (effective factor entries) reads full-rank in this MUMPS version even with
 BLR active — the compression shows in INFOG(22)/(21), not INFOG(29).
+Accuracy confirmation of the winning config (random-RHS forward error, 545k, single
+rank; the S-parameter agreement — the physical acceptance quantity — was separately
+measured at 2.1e-10 vs LU at 2.8M dofs for blr 1e-6):
+
+| config | INFOG(22) | ratio | rel_err (random RHS) |
+|---|---|---|---|
+| Scotch + blr 1e-6, no refinement | 5,039 | 0.462 | 8.6e-3 |
+| **Scotch + blr 1e-6 + ICNTL(10)=2 refinement** | **5,039** | **0.462** | **4.7e-6** |
+| Scotch + blr 1e-8 + ICNTL(10)=2 | 5,295 | 0.486 | 7.4e-5 (non-monotonic vs 1e-6 — noted, not chased) |
+| Scotch, no BLR (pristine reference) | 5,755 | 0.528 | 8.3e-11 |
+
+Recommended shipping config:
+`solver_settings={'symmetric': True, 'mat_mumps_icntl_7': 3, 'blr_tol': 1e-6, 'mat_mumps_icntl_10': 2}`
+— 0.462x stock LU measured, S-params at 2.1e-10-class agreement; the pristine no-BLR
+config (0.528) and OOC (0.38x RSS) bracket it for users with different priorities.
+
 At-scale certification (2.8M/3.23M dofs, 8 ranks, in-core + OOC + LU-OOC, with
 aggregate RSS) is queued on the benchmark box; its tables append here when complete.
 
