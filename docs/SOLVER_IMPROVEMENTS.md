@@ -182,8 +182,10 @@ harness + gdb:
   pivot thresholds, icntl_58, icntl_12, icntl_24, SBAIJ storage) crash identically —
   the bug is below MUMPS.
 - Toy complex-symmetric matrices do NOT reproduce it (their frontal blocks are too small
-  to reach the blocked GEMMT path) — the dumped-real-matrix harness in `bench/symtest/`
-  is the go-to repro pattern, and doubles as an upstream OpenBLAS bug report.
+  to reach the blocked GEMMT path) — the go-to repro pattern is the dumped-real-matrix
+  standalone harness (archived offline with the evidence bundles — available on request;
+  the shim and its unit test `bench/test_zgemmt.py` ship in the repo), and it doubles as
+  an upstream OpenBLAS bug report.
 
 **Fix:** `bench/zgemmt_fix.f90` — a blocked ZGEMM-based drop-in `zgemmt_`, LD_PRELOADed
 over the system BLAS (baked into `bench/Dockerfile.bench`). Unit-tested against numpy
@@ -334,7 +336,7 @@ compression stacks on BLR for a further ~11% measured saving — new best in-cor
 while leaving forward error in the same class (6.1e-6 vs 4.7e-6). Two negative results
 worth keeping: UCFS (ICNTL 36) had no memory effect here, and in OOC mode compression
 HURTS the in-RAM working set (sym+OOC plain: 1,341 MB measured working set, rel_err
-1.0e-10; sym+OOC+BLR+CB37: 3,069 MB) — keep OOC plain. At-scale certification of the
+1.0e-10; sym+OOC+BLR+ICNTL(37): 3,069 MB) — keep OOC plain. At-scale certification of the
 0.411 config (2.8M/3.23M, 8 ranks, with ICNTL(13) root-treatment A/B and OS-level
 cgroup peak-RAM capture) is running; tables append here when complete.
 
@@ -445,7 +447,7 @@ denominator was obtained swap-assisted: 7.7 GB NVMe swap peak, solve still 120 s
 | config | INFOG(22) measured | ratio vs measured LU | max \|dS\| vs LU | solve |
 |---|---|---|---|---|
 | in-core LU (defaults) | 24,646 (est 34,542) | 1.000 | — | 119.9 s |
-| fp64 LDL^T + Scotch + BLR + CB37 (+ICNTL 13) | 13,018 | 0.528 | 1.4e-9 | 70.7 s |
+| fp64 LDL^T + Scotch + BLR + ICNTL(37) (+ICNTL 13) | 13,018 | 0.528 | 1.4e-9 | 70.7 s |
 | **fp32 factor + full stack + fp64 FGMRES** | **7,603** | **0.308** | 2.2e-7 | 217.4 s |
 
 Aggregate RSS (sum over 8 ranks): LU 32.58 GB → fp32 stack 19.31 GB (0.593; the
@@ -464,7 +466,9 @@ diagnostics above). Solve-time cost of fp32 is ~3.1x the fp64 stack in the same 
   (numerical rank grows with electrical size). The fp32 multiplier does NOT decay (0.51x at both sizes).
 - Compression in OOC mode is counterproductive (see OOC note above); plain sym+OOC remains
   the RAM-capacity champion: measured working set 5,352 MB at 2.8M = **0.217x of what
-  in-core LU measures on the same box** (mixed-mode comparison, labeled as such).
+  in-core LU measures on the same box** (mixed-mode comparison, labeled as such; a
+  separate run of the same mode as the certification table's 5,432 MB — run-to-run
+  variation, same measurement).
 
 **New BLAS bug found:** OpenBLAS 0.3.26's `cgemmt_` (single-complex GEMMT) segfaults
 under CMUMPS 5.8.2 LDL^T exactly like `zgemmt_` does under ZMUMPS — any

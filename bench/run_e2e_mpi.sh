@@ -1,4 +1,7 @@
 #!/bin/bash
+# Stock legs compare against an unmodified upstream tree: from the mounted repo root,
+#   git clone https://github.com/Wojoxiw/Scatt3D upstream-Scatt3D
+# (giving /work/upstream-Scatt3D/Scatt3D); the modified tree is this repo at /work/Scatt3D.
 # End-to-end imaging verification with MPI sim phase + single-rank postprocessing.
 exec > /work/bench/e2e_mpi.log 2>&1
 source /usr/local/bin/dolfinx-complex-mode 2>/dev/null
@@ -20,10 +23,10 @@ run_case() {
   cd ..
 }
 run_case stock '{}' /work/upstream-Scatt3D/Scatt3D
-run_case branch '{}' /work/hunter-Scatt3D/Scatt3D
-run_case blr '{"blr_tol": 1e-6}' /work/hunter-Scatt3D/Scatt3D
-run_case sym '{"symmetric": true}' /work/hunter-Scatt3D/Scatt3D
-run_case sweep '{"sweep_mode": true}' /work/hunter-Scatt3D/Scatt3D
+run_case branch '{}' /work/Scatt3D
+run_case blr '{"blr_tol": 1e-6}' /work/Scatt3D
+run_case sym '{"symmetric": true}' /work/Scatt3D
+run_case sweep '{"sweep_mode": true}' /work/Scatt3D
 echo "=== E2E COMPARISON ==="
 python3 - <<'EOF'
 import numpy as np

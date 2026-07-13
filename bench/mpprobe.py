@@ -6,7 +6,7 @@
 # Input matrix /work/bench/cableport/A545k.bin (545k-dof deg-3 coax system) is
 # regenerated with (inside the bench container, ~4 min on 16 cores):
 #   mkdir -p bench/cableport && cd bench/cableport
-#   PETSC_OPTIONS="-theScatteringProblem_ksp_view_mat binary:/work/bench/cableport/A545k.bin" #     SCATT3D_SRC=/work/Scatt3D python3 -u /work/bench/cableport_validate.py #     3 "{}" dump 0.2857142857142857 3 1
+#   PETSC_OPTIONS="-theScatteringProblem_ksp_view_mat binary:/work/bench/cableport/A545k.bin" \n#   SCATT3D_SRC=/work/Scatt3D python3 -u /work/bench/cableport_validate.py \n#   3 "{}" dump 0.2857142857142857 3 1
 import sys
 import resource
 import petsc4py

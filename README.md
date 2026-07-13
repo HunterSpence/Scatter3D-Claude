@@ -62,7 +62,7 @@ python3 Scatt3D/test_measurement_diagnostics.py   # diagnostics on synthetic gro
 prob = Scatt3DProblem(comm, mesh, ...)                                # direct, 3.3x faster than before
 prob = Scatt3DProblem(comm, mesh, solver_settings={'blr_tol': 1e-6}) # + MUMPS BLR compression
 prob = Scatt3DProblem(comm, mesh, solver_settings={'sweep_mode': True})  # anchor-LU + FGMRES sweep
-prob = Scatt3DProblem(comm, mesh, solver_settings={'symmetric': True})   # complex-symmetric LDL^T: 0.528x stock LU measured (INFOG-22, 545k); 0.411x with +Scotch+BLR+ICNTL(37); +OOC = 0.38x measured peak RAM (single rank)
+prob = Scatt3DProblem(comm, mesh, solver_settings={'symmetric': True})   # complex-symmetric LDL^T: 0.547x stock LU measured (INFOG-22, 545k; 0.528x adding Scotch ordering icntl_7=3); 0.411x with +Scotch+BLR+ICNTL(37); +OOC = 0.38x measured peak RAM (single rank)
 # maximum savings — fp32 factor + fp64 FGMRES (PETSc >= 3.25; needs both GEMMT shims): 0.220x (545k) / 0.308x (2.8M) measured, S-params 2e-7-class vs LU
 prob = Scatt3DProblem(comm, mesh, solver_settings={'symmetric': True, 'mat_mumps_icntl_7': 3, 'blr_tol': 1e-6, 'mat_mumps_icntl_37': 1, 'pc_precision': 'single', 'ksp_type': 'fgmres', 'ksp_rtol': 1e-12, 'ksp_max_it': 100})
 ```

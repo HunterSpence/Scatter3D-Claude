@@ -3,7 +3,7 @@
 import ctypes
 import numpy as np
 
-lib = ctypes.CDLL("./libzgemmt_fix.so")
+lib = ctypes.CDLL("/usr/local/lib/libzgemmt_fix.so")  # built there by Dockerfile.bench
 zgemmt = lib.zgemmt_
 
 rng = np.random.default_rng(0)

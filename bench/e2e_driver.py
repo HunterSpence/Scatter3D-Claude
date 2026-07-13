@@ -10,7 +10,7 @@ import numpy as np
 import dolfinx.fem.petsc  # scatteringProblem assumes caller imported this
 from mpi4py import MPI
 
-sys.path.insert(0, os.environ.get("SCATT3D_SRC", "/work/upstream-Scatt3D/Scatt3D"))
+sys.path.insert(0, os.environ.get("SCATT3D_SRC", "/work/Scatt3D"))
 import meshMaker
 import scatteringProblem
 import postProcessing

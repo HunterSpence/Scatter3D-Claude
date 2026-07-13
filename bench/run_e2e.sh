@@ -1,4 +1,7 @@
 #!/bin/bash
+# Stock legs compare against an unmodified upstream tree: from the mounted repo root,
+#   git clone https://github.com/Wojoxiw/Scatt3D upstream-Scatt3D
+# (giving /work/upstream-Scatt3D/Scatt3D); the modified tree is this repo at /work/Scatt3D.
 # End-to-end imaging verification: stock vs branch (direct/BLR/sweep). Self-logging.
 # Env knobs: E2E_H (mesh h, default 0.25 = lambda/4), E2E_NF (freqs, default 2),
 #            E2E_TIMEOUT (seconds per case, default 4500).
@@ -22,11 +25,11 @@ run_case() {
 }
 echo "=== wave 1: stock + branch (parallel), H=$H NF=$NF timeout=$T ==="
 ( run_case stock '{}' /work/upstream-Scatt3D/Scatt3D ) &
-( run_case branch '{}' /work/hunter-Scatt3D/Scatt3D ) &
+( run_case branch '{}' /work/Scatt3D ) &
 wait
 echo "=== wave 2: blr + sweep (parallel) ==="
-( run_case blr '{"blr_tol": 1e-6}' /work/hunter-Scatt3D/Scatt3D ) &
-( run_case sweep '{"sweep_mode": true}' /work/hunter-Scatt3D/Scatt3D ) &
+( run_case blr '{"blr_tol": 1e-6}' /work/Scatt3D ) &
+( run_case sweep '{"sweep_mode": true}' /work/Scatt3D ) &
 wait
 echo "=== E2E COMPARISON ==="
 python3 - <<'PYEOF'

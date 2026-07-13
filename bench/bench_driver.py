@@ -12,7 +12,7 @@ from mpi4py import MPI
 from timeit import default_timer as timer
 import resource
 
-sys.path.insert(0, os.environ.get("SCATT3D_SRC", "/work/upstream-Scatt3D/Scatt3D"))
+sys.path.insert(0, os.environ.get("SCATT3D_SRC", "/work/Scatt3D"))
 import meshMaker
 import scatteringProblem
 
