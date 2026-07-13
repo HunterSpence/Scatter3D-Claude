@@ -421,3 +421,68 @@ singular subspace 14.2% vs simulated 31.5% (the model/data-mismatch signature).
 These verdicts characterize the synthetic set and certify the tooling end-to-end; the
 same diagnostics are the recommended first pass on real VNA data
 (`bench/box-evidence-2026-07-13/scatt3d-qs-diag.log`, plots in `diag_out/`).
+
+### Below-0.5 sprint — mixed precision lands 0.22–0.31 measured (2026-07-13, second box)
+
+A follow-up sprint (4 research agents + 2 external reviews + measured probes) pushed
+past the 0.462/0.411 in-core results. All numbers measured INFOG(21/22) unless labeled;
+second CPX51 box, evidence in `bench/box-evidence-2026-07-13/{scatt3d-cb37-cert.log, certify2/}`.
+
+**545k-dof matrix, single rank (stock LU measured: 10,898 MB):**
+
+| config | INFOG(22) measured | ratio | accuracy |
+|---|---|---|---|
+| fp64 LDL^T + Scotch + BLR 1e-6 + IR (prior best) | 5,039 | 0.462 | rel_err 4.7e-6 |
+| + ICNTL(37) CB compression | 4,476 | 0.411 | rel_err 6.1e-6 |
+| fp32 factor (`-pc_precision single`, CMUMPS) + fp64 FGMRES, plain | 3,049 | 0.280 | rel_err 2.3e-7, 5 its, true res 3.6e-13 |
+| fp32 + Scotch | 2,948 | 0.271 | rel_err 2.0e-7 |
+| **fp32 + Scotch + BLR 1e-6 + ICNTL(37)** | **2,393** | **0.220** | rel_err 2.1e-7, true res 3.7e-13 |
+
+**2.8M dofs, 8 ranks, in-core, measured BOTH sides on the same box** (the in-core LU
+denominator was obtained swap-assisted: 7.7 GB NVMe swap peak, solve still 120 s):
+
+| config | INFOG(22) measured | ratio vs measured LU | max \|dS\| vs LU | solve |
+|---|---|---|---|---|
+| in-core LU (defaults) | 24,646 (est 34,542) | 1.000 | — | 119.9 s |
+| fp64 LDL^T + Scotch + BLR + CB37 (+ICNTL 13) | 13,018 | 0.528 | 1.4e-9 | 70.7 s |
+| **fp32 factor + full stack + fp64 FGMRES** | **7,603** | **0.309** | 2.2e-7 | 217.4 s |
+
+Aggregate RSS (sum over 8 ranks): LU 32.58 GB → fp32 stack 19.31 GB (0.593; the
+dolfinx/PETSc per-rank overhead floor dominates this axis). The fp32 S-parameter
+agreement (2.2e-7) is set by the outer FGMRES rtol (1e-12 here) — tunable; it sits
+~an order below the reciprocity error floor of real measured data (1.7e-6, see
+diagnostics above). Solve-time cost of fp32 is ~2.4x the fp64 stack — the standard
+memory/time trade, now quantified.
+
+**Negative results from the same sprint (measured, kept to prevent re-chasing):**
+- ICNTL(13) root-treatment: ±2–5%, direction inconsistent across sizes — noise, not a lever
+  (the "uncompressed ScaLAPACK root" hypothesis for the at-scale plateau is refuted at these sizes).
+- np=4 vs np=8: −3.7% INFOG(22) sum, −10% RSS sum, per-rank memory nearly doubles — small dial.
+- ICNTL(36) UCFS: no memory effect. blr_tol 5e-7/2e-7: both worse than 1e-6.
+- BLR/CB compression **decays with problem size** in fp64: 0.411 at 545k → 0.528 at 2.8M
+  (numerical rank grows with electrical size). The fp32 multiplier does NOT decay (0.51x at both sizes).
+- Compression in OOC mode is counterproductive (see OOC note above); plain sym+OOC remains
+  the RAM-capacity champion: measured working set 5,352 MB at 2.8M = **0.217x of what
+  in-core LU measures on the same box** (mixed-mode comparison, labeled as such).
+
+**New BLAS bug found:** OpenBLAS 0.3.26's `cgemmt_` (single-complex GEMMT) segfaults
+under CMUMPS 5.8.2 LDL^T exactly like `zgemmt_` does under ZMUMPS — any
+`-pc_precision single` use needs the sibling shim `bench/cgemmt_fix.f90` (mechanical
+port of the zgemmt shim) LD_PRELOADed alongside. Both shims belong in the upstream
+OpenBLAS report.
+
+**Requirements for the fp32 path:** PETSc >= 3.25 (dolfinx:stable already ships 3.25.1 —
+no rebuild needed), plus both GEMMT shims. Drop-in:
+
+```python
+solver_settings={'symmetric': True, 'mat_mumps_icntl_7': 3, 'blr_tol': 1e-6,
+                 'mat_mumps_icntl_37': 1, 'pc_precision': 'single',
+                 'ksp_type': 'fgmres', 'ksp_rtol': 1e-12, 'ksp_max_it': 100}
+# 0.220x (545k) / 0.309x (2.8M) of measured stock-LU memory; S-params 2e-7-class vs LU
+```
+
+Recommended ladder now: fp32 stack (0.22–0.31, S at 2e-7) > fp64 stack with ICNTL(37)
+(0.41–0.53, S at 1e-9) > plain LDL^T (0.53–0.58, machine-eps) > +OOC for hard RAM caps
+(0.22x mixed-mode vs in-core LU, machine-eps). Next tier (researched, not yet run):
+MUMPS 5.9 ICNTL(40) adaptive-precision BLR (stacks, OOC-compatible, needs 5.9 build);
+two-level p-coarse preconditioning (would also cut the RSS floor; a real solver project).
