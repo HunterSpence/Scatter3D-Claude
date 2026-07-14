@@ -1473,9 +1473,9 @@ class Scatt3DProblem():
                 x = 2*pi*FEMm.meshInfo.object_scale/lambdat
                 for i in range(nvals*2): ## get a miepython error if I use a vector of x, so:
                     if(angles[i, 1] == 90): ## if theta=90, then this is H-plane/perpendicular
-                        mies[i] = miepython.i_per(m, x, np.cos((angles[i, 0]*pi/180)), norm='qsca')*pi*FEMm.meshInfo.object_scale**2 ## +pi since it seems backwards => forwards
+                        mies[i] = np.squeeze(miepython.i_per(m, x, np.cos((angles[i, 0]*pi/180)), norm='qsca'))*pi*FEMm.meshInfo.object_scale**2 ## +pi since it seems backwards => forwards
                     else: ## if not, we are changing theta angles and in the parallel plane
-                        mies[i] = miepython.i_par(m, x, np.cos((angles[i, 0]*pi/180)), norm='qsca')*pi*FEMm.meshInfo.object_scale**2 ## +pi/2 since it seems backwards => forwards
+                        mies[i] = np.squeeze(miepython.i_par(m, x, np.cos((angles[i, 0]*pi/180)), norm='qsca'))*pi*FEMm.meshInfo.object_scale**2 ## +pi/2 since it seems backwards => forwards
                         
                 vals = areaResult, khatResults, farfields, mies # [FF surface area, khat integral], scattering along planes, mie intensities in the scattering directions
                 return vals
@@ -1535,9 +1535,9 @@ class Scatt3DProblem():
                         x = 2*pi*FEMm.meshInfo.object_scale/lambdat
                         for i in range(nvals*2): ## get a miepython error if I use a vector of x, so:
                             if(angles[i, 1] == 90): ## if theta=90, then this is H-plane/perpendicular
-                                mie[i] = miepython.i_per(m, x, np.cos((angles[i, 0]*pi/180)), norm='qsca')*pi*FEMm.meshInfo.object_scale**2 ## +pi since it seems backwards => forwards
+                                mie[i] = np.squeeze(miepython.i_per(m, x, np.cos((angles[i, 0]*pi/180)), norm='qsca'))*pi*FEMm.meshInfo.object_scale**2 ## +pi since it seems backwards => forwards
                             else: ## if not, we are changing theta angles and in the parallel plane
-                                mie[i] = miepython.i_par(m, x, np.cos((angles[i, 0]*pi/180)), norm='qsca')*pi*FEMm.meshInfo.object_scale**2 ## +pi/2 since it seems backwards => forwards
+                                mie[i] = np.squeeze(miepython.i_par(m, x, np.cos((angles[i, 0]*pi/180)), norm='qsca'))*pi*FEMm.meshInfo.object_scale**2 ## +pi/2 since it seems backwards => forwards
                         
                         ax1.plot(angles[:nvals, 0], mie[:nvals], label = 'Miepython (H-plane)', linewidth = linewidth, color = 'blue', linestyle = '--') ## first part should be H-plane ## -180 so 0 is the forward direction
                         ax1.plot(angles[nvals:, 0], mie[nvals:], label = 'Miepython (E-plane)', linewidth = linewidth, color = 'red', linestyle = '--') ## -90 so 0 is the forward direction
@@ -1592,8 +1592,8 @@ class Scatt3DProblem():
                 for i in range(len(self.fvec)): ## get a miepython error if I use a vector of x, so:
                     lambdat = c0/self.fvec[i]
                     x = 2*pi*FEMm.meshInfo.object_scale/lambdat
-                    mieForward[i] = miepython.i_par(m, x, np.cos(pi), norm='qsca') 
-                    mieBackward[i] = miepython.i_par(m, x, np.cos(0), norm='qsca')
+                    mieForward[i] = np.squeeze(miepython.i_par(m, x, np.cos(pi), norm='qsca')) 
+                    mieBackward[i] = np.squeeze(miepython.i_par(m, x, np.cos(0), norm='qsca'))
                 
                 for i in range(len(angles)):
                     plt.plot(self.fvec/1e9, np.abs(farfields[:, i, 0])**2 + np.abs(farfields[:, i, 1])**2, label = r'sim, $\theta=$'+fr'{angles[i, 0]:.0f}, $\phi={angles[i, 1]:.0f}$')
