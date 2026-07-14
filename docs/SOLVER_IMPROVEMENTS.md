@@ -34,6 +34,11 @@ nearby ("anchor") frequency is an excellent preconditioner. In sweep mode the so
 the anchor factorization and runs FGMRES at subsequent frequencies; it re-factorizes
 (re-anchors) automatically only when iterations exceed `sweep_max_it` (default 25) or the
 solve fails — so worst case it degenerates to the direct solver, never below it.
+**Measured caveat (2026-07-14, bench/MEMLADDER-2026-07-14.md):** with a plain fp64 LDLT
+factor at 2.26M DOFs / Nf=22 / 8 ranks, sweep_mode is a net LOSS (1.7x slower than
+refactorizing per frequency, zero re-anchors) — the cheap factor makes per-frequency
+refactorization the better deal at scale. sweep_mode's measured win is the fp32-anchor
+configuration at laptop scale below.
 This IS a converging iterative solver for this problem — it sidesteps the reason all ~20
 previous iterative attempts failed (see below) by using spectral information the sweep has
 already paid for. The denser the frequency grid, the bigger the win (the measured sweeps
