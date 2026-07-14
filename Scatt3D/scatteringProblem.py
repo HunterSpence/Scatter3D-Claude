@@ -723,6 +723,20 @@ class Scatt3DProblem():
         ## BLAS has no GEMMT at all. Run with bench/zgemmt_fix.f90 LD_PRELOADed (baked into
         ## bench/Dockerfile.bench) or use a BLAS with a working GEMMT (e.g. MKL).
         sym_mode = solver_opts.pop('symmetric', False)
+        ## 'batch_rhs': True - per frequency, assemble ALL excitations' RHS vectors and apply
+        ##   the stored factorization to them in ONE MatMatSolve (BLAS3) instead of one
+        ##   triangular solve per antenna (measured 2.9-6.2x on the solve phase, bench/
+        ##   TESTWAVE-2026-07-14.md). Direct (preonly) solves only - auto-disabled for
+        ##   sweep_mode / iterative (fp32-FGMRES) configurations.
+        ## 'adaptive_sweep': tol - solve an adaptively chosen subset of the frequency sweep
+        ##   and cubic-spline the remaining S-parameters, verifying each new solve against
+        ##   its prediction until two consecutive verifications land under tol (then
+        ##   interpolate the rest). S-parameters only: skipped frequencies store no field
+        ##   solutions, so leave this off for runs whose post-processing reads saved fields
+        ##   at every frequency. Worst case (non-smooth S(f)) it degrades to solving all
+        ##   frequencies - never to wrong answers.
+        batch_rhs = solver_opts.pop('batch_rhs', False)
+        adaptive_tol = solver_opts.pop('adaptive_sweep', None)
         self.solve_type = 'sweep' if sweep_mode else 'direct'
         
         #petsc_options={"ksp_type": "lgmres", "pc_type": "sor", **self.solver_settings, **conv_sets} ## (https://petsc.org/release/manual/ksp/)
@@ -819,6 +833,10 @@ class Scatt3DProblem():
             ksp.setOperators(A_mat)
         ksp.setFromOptions()
         pc = ksp.getPC()
+        batch_active = bool(batch_rhs) and not sweep_mode and ksp.getType() == 'preonly'
+        if(batch_rhs and not batch_active and self.comm.rank == self.model_rank and self.verbosity > 0):
+            print('batch_rhs requested but disabled (needs a direct preonly solve; sweep/iterative config active)')
+        self._batchX = None
 
         def assembleLHS(anchor=False):
             '''
@@ -877,6 +895,57 @@ class Scatt3DProblem():
                 E_h.x.scatter_forward()
                 its = ksp.getIterationNumber()
             return its
+
+        def solveBatch(E_h, n, excitationCount):
+            '''
+            Batched variant of solveCurrent for direct solves: on the first excitation of a
+            frequency, assembles every excitation's RHS, (re)factorizes the current matrix and
+            applies the factorization to all of them in one MatMatSolve; subsequent excitations
+            just read their column. Same answers as solveCurrent (one triangular-solve batch
+            instead of excitationCount separate ones).
+            '''
+            nloc = b_vec.getLocalSize()
+            if(n == 0):
+                Bnp = np.zeros((nloc, excitationCount), dtype=PETSc.ScalarType)
+                for k in range(excitationCount):
+                    for m in range(excitationCount):
+                        a[m].value = 0.0
+                    a[k].value = 1.0
+                    with b_vec.localForm() as loc:
+                        loc.set(0)
+                    dolfinx.fem.petsc.assemble_vector(b_vec, L_form)
+                    dolfinx.fem.petsc.apply_lifting(b_vec, [a_form], bcs=[bcs])
+                    b_vec.ghostUpdate(addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.REVERSE)
+                    dolfinx.fem.petsc.set_bc(b_vec, bcs)
+                    Bnp[:, k] = b_vec.array_r[:nloc]
+                for m in range(excitationCount): ## restore the caller's excitation state
+                    a[m].value = 0.0
+                a[n].value = 1.0
+                ksp.setUp()
+                pc.setUp() ## (re)factorizes if the matrix changed since the last factorization
+                Fmat = pc.getFactorMatrix()
+                try: ## same memory bookkeeping as solveCurrent
+                    self.lastFactorMemMB = (Fmat.getMumpsInfog(16), Fmat.getMumpsInfog(17),
+                                            Fmat.getMumpsInfog(21), Fmat.getMumpsInfog(22))
+                    if(not getattr(self, '_factor_mem_printed', False) and self.comm.rank == self.model_rank and self.verbosity > 1):
+                        print(f'MUMPS factor memory: {self.lastFactorMemMB[0]} MB max/proc, {self.lastFactorMemMB[1]} MB total (analysis estimates); '
+                              f'effective used: {self.lastFactorMemMB[2]} MB max/proc, {self.lastFactorMemMB[3]} MB total')
+                        self._factor_mem_printed = True
+                except Exception:
+                    pass
+                B = PETSc.Mat().createDense(((nloc, PETSc.DETERMINE), (PETSc.DETERMINE, excitationCount)), comm=self.comm)
+                B.setUp()
+                B.getDenseArray()[:, :] = Bnp
+                B.assemble()
+                X = B.duplicate()
+                X.assemble()
+                Fmat.matSolve(B, X)
+                self._batchX = X.getDenseArray().copy()
+                B.destroy()
+                X.destroy()
+            E_h.x.petsc_vec.getArray()[:] = self._batchX[:, n]
+            E_h.x.scatter_forward()
+            return 1
         
         #=======================================================================
         # coarse_ksp = pc.getMGCoarseSolve()
@@ -1065,7 +1134,50 @@ class Scatt3DProblem():
             else:
                 nameAdd = 'Dut'
             S = np.zeros((self.Nf, meshInfo.N_antennas, meshInfo.N_antennas), dtype=complex)
-            for nf in range(self.Nf):
+
+            def _freq_schedule():
+                '''
+                Yields the frequency indices to actually SOLVE. Default: all of them, in order.
+                With adaptive_sweep: seed solves, then greedy largest-gap refinement where each
+                new solve first records the spline PREDICTION at that frequency and is verified
+                against it after the body fills S - two consecutive verifications under tol end
+                the sweep and the remaining S rows are cubic-spline interpolated (S-parameters
+                only; no fields are stored for skipped frequencies).
+                '''
+                if(not (adaptive_tol and meshInfo.N_antennas > 0 and self.Nf >= 6)):
+                    yield from range(self.Nf)
+                    return
+                from scipy.interpolate import CubicSpline
+                solved = []
+                for i in sorted({0, self.Nf // 3, (2 * self.Nf) // 3, self.Nf - 1}):
+                    yield i
+                    solved.append(i)
+                ok_streak = 0
+                while len(solved) < self.Nf and ok_streak < 2:
+                    s = sorted(solved)
+                    gaps = [(b - a, a, b) for a, b in zip(s[:-1], s[1:]) if b - a >= 2]
+                    if(not gaps):
+                        break
+                    _, lo, hi = max(gaps)
+                    cand = (lo + hi) // 2
+                    pred = CubicSpline(self.fvec[s], S[s], axis=0)(self.fvec[cand])
+                    yield cand
+                    solved.append(cand)
+                    err = float(np.max(np.abs(S[cand] - pred)))
+                    ok_streak = ok_streak + 1 if err <= adaptive_tol else 0
+                    if(self.comm.rank == self.model_rank and self.verbosity > 1):
+                        print(f'Adaptive sweep: f[{cand}] prediction verified to {err:.2e} (tol {adaptive_tol:g}, streak {ok_streak})')
+                s = sorted(solved)
+                if(len(s) < self.Nf):
+                    cs = CubicSpline(self.fvec[s], S[s], axis=0)
+                    for nf in range(self.Nf):
+                        if(nf not in solved):
+                            S[nf] = cs(self.fvec[nf])
+                self.adaptive_solved = s
+                if(self.comm.rank == self.model_rank and self.verbosity > 0):
+                    print(f'Adaptive sweep: solved {len(s)}/{self.Nf} frequencies, interpolated the rest')
+
+            for nf in _freq_schedule():
                 if( (self.verbosity > 1.9 and self.comm.rank == self.model_rank) or (self.verbosity > 2.5) ):
                     print(f'Rank {self.comm.rank}: Frequency {nf+1} / {self.Nf}')
                 sys.stdout.flush()
@@ -1095,7 +1207,10 @@ class Scatt3DProblem():
                                 S = np.load(self.dataFolder+self.name+nameAdd+'_temp_S.npz')['saveS']
                             S = self.comm.bcast(S, root=self.model_rank)
                             continue
-                    solveCurrent(E_h)
+                    if(batch_active and excitationCount > 1):
+                        solveBatch(E_h, n, excitationCount)
+                    else:
+                        solveCurrent(E_h)
                     if(np.isnan(np.dot(E_h.x.array, E_h.x.array))): ## sometimes if memory requirements are too high, it will still 'compute' but end with NaN results. Sometimes another error will give Inf. results
                         if( self.comm.rank == self.model_rank ):
                             print(E_h.x.array)
